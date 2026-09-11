@@ -49,7 +49,28 @@ Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 uv sync
 cp .env.example .env   # then fill in the keys you have
 uv run aiact info
+uv run aiact ingest --download   # builds the corpus into data/index/corpus.db
 ```
+
+The corpus today: 7 documents, 1 287 provisions, 1 896 chunks (median 277 tokens, p95 484).
+
+| Source | Languages | Provisions |
+| --- | --- | --- |
+| AI Act — Regulation (EU) 2024/1689 | EN, FR | 306 each (180 recitals, 113 articles, 13 annexes) |
+| GDPR — Regulation (EU) 2016/679 | EN, FR | 272 each (173 recitals, 99 articles) |
+| Commission guidelines — AI system definition, prohibited practices | EN | 130 sections |
+| CNIL — AI development checklist | FR | 1 section (unnumbered headings — see [ADR 0003](docs/adr/0003-structure-aware-chunking.md)) |
+
+## Data sources and licences
+
+Legal texts are fetched by CELEX id from the EU Publications Office (Cellar), never scraped
+from the EUR-Lex website — see [ADR 0002](docs/adr/0002-fetch-legal-texts-from-cellar.md).
+Raw files are not versioned; `data/sources.yaml` plus recorded checksums make ingestion
+reproducible.
+
+- EU legislation and Commission guidelines: © European Union, reuse authorised with
+  acknowledgement of the source (Commission Decision 2011/833/EU) — https://eur-lex.europa.eu
+- CNIL guidance: Licence Ouverte / Open Licence (Etalab), attribution required — https://www.cnil.fr
 
 ## Development
 
@@ -63,8 +84,8 @@ pre-commit install     # runs the same checks on every commit
 
 ## Roadmap
 
-- [ ] **M0** Foundations — packaging, tooling, configuration, tracing bootstrap, CI
-- [ ] **M1** Ingestion & chunking
+- [x] **M0** Foundations — packaging, tooling, configuration, tracing bootstrap, CI
+- [x] **M1** Ingestion & chunking — Cellar downloads, provision-level parsing, two chunkers
 - [ ] **M2** Embeddings & hybrid retrieval
 - [ ] **M3** LLM client, grounded generation, end-to-end tracing
 - [ ] **M4** LangGraph agent & HTTP API

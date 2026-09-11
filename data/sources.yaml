@@ -1,0 +1,53 @@
+# Corpus manifest. Raw files are NOT versioned: `aiact ingest --download` fetches them
+# into data/raw/ and records checksums, so an index can always be rebuilt from this file.
+#
+# Legal texts come from the EU Publications Office (Cellar) by content negotiation on the
+# CELEX id, rather than by scraping the EUR-Lex web pages.
+sources:
+  - id: ai_act
+    title: Regulation (EU) 2024/1689 laying down harmonised rules on artificial intelligence
+    short_title: AI Act
+    format: eurlex-xhtml
+    celex: "32024R1689"
+    languages: [en, fr]
+    license: Reuse authorised with acknowledgement of the source (Decision 2011/833/EU)
+    attribution: © European Union, https://eur-lex.europa.eu
+
+  - id: gdpr
+    title: Regulation (EU) 2016/679 on the protection of natural persons with regard to the processing of personal data
+    short_title: GDPR
+    format: eurlex-xhtml
+    celex: "32016R0679"
+    languages: [en, fr]
+    license: Reuse authorised with acknowledgement of the source (Decision 2011/833/EU)
+    attribution: © European Union, https://eur-lex.europa.eu
+
+  - id: ec_ai_system_definition
+    title: Commission Guidelines on the definition of an artificial intelligence system
+    short_title: EC guidelines — AI system definition
+    format: pdf
+    languages: [en]
+    urls:
+      en: https://ai-act-service-desk.ec.europa.eu/sites/default/files/2025-08/commission_guidelines_on_the_definition_of_an_artificial_intelligence_system_established_by_regulation_eu_20241689_ai_actenglish_nf2skcqfrtjdfggjavcodopcwz4_112455.PDF
+    license: Reuse authorised with acknowledgement of the source (Decision 2011/833/EU)
+    attribution: © European Union, https://digital-strategy.ec.europa.eu
+
+  - id: ec_prohibited_practices
+    title: Commission Guidelines on prohibited artificial intelligence practices established by Regulation (EU) 2024/1689
+    short_title: EC guidelines — prohibited practices
+    format: pdf
+    languages: [en]
+    urls:
+      en: https://ai-act-service-desk.ec.europa.eu/sites/default/files/2025-08/guidelines_on_prohibited_artificial_intelligence_practices_established_by_regulation_eu_20241689_ai_act_english_ied3r5nwo50xggpcfmwckm3nuc_112367-1.PDF
+    license: Reuse authorised with acknowledgement of the source (Decision 2011/833/EU)
+    attribution: © European Union, https://digital-strategy.ec.europa.eu
+
+  - id: cnil_ai_checklist
+    title: "Développement des systèmes d'IA : que faut-il vérifier ?"
+    short_title: CNIL — AI development checklist
+    format: pdf
+    languages: [fr]
+    urls:
+      fr: https://www.cnil.fr/sites/default/files/2025-07/ia_liste_de_verification.pdf
+    license: Licence Ouverte / Open Licence (Etalab) — attribution required
+    attribution: CNIL, https://www.cnil.fr

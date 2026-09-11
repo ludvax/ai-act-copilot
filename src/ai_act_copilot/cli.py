@@ -9,6 +9,8 @@ from rich.table import Table
 
 from ai_act_copilot import __version__
 from ai_act_copilot.config import get_settings
+from ai_act_copilot.ingestion.pipeline import ingest as run_ingest
+from ai_act_copilot.models import ChunkStrategy
 from ai_act_copilot.observability.tracing import TracingStatus, flush_tracing, init_tracing
 
 app = typer.Typer(
@@ -39,6 +41,42 @@ def main(
     logging.basicConfig(level=settings.log_level, format="%(levelname)s %(name)s: %(message)s")
     ctx.obj = init_tracing(settings)
     ctx.call_on_close(flush_tracing)
+
+
+@app.command()
+def ingest(
+    download: Annotated[
+        bool, typer.Option("--download", help="Fetch missing or changed source files first.")
+    ] = False,
+    force: Annotated[
+        bool, typer.Option("--force", help="Re-download even when the cached file is current.")
+    ] = False,
+    source: Annotated[
+        list[str] | None, typer.Option("--source", help="Limit to these source ids.")
+    ] = None,
+    strategy: Annotated[
+        ChunkStrategy | None, typer.Option("--strategy", help="Override the chunking strategy.")
+    ] = None,
+) -> None:
+    """Download, parse and chunk the corpus into the local store."""
+    settings = get_settings()
+    reports = run_ingest(
+        settings, download=download, force=force, source_ids=source or None, strategy=strategy
+    )
+
+    table = Table(title="Ingested corpus")
+    for column in ("Document", "Provisions", "Chunks", "Avg tokens", "Fetched"):
+        table.add_column(column, justify="right" if column != "Document" else "left")
+    for report in reports:
+        table.add_row(
+            report.document_id,
+            str(report.provisions),
+            str(report.chunks),
+            f"{report.average_tokens:.0f}",
+            "downloaded" if report.downloaded else "cached",
+        )
+    console.print(table)
+    console.print(f"Store: {settings.database_path}")
 
 
 @app.command()

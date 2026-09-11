@@ -3,9 +3,18 @@ from pathlib import Path
 
 import pytest
 
-from ai_act_copilot.config import get_settings
+from ai_act_copilot.config import Settings, get_settings
+from ai_act_copilot.observability.tracing import init_tracing
 
 _ENV_PREFIXES = ("AIACT_", "ANTHROPIC_", "LANGFUSE_")
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _tracing_disabled() -> None:
+    """Instrumented code must never reach a real Langfuse project during tests."""
+    init_tracing(Settings(tracing_enabled=False))
 
 
 @pytest.fixture(autouse=True)

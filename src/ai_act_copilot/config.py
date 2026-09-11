@@ -7,6 +7,8 @@ from typing import Literal
 from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from ai_act_copilot.models import ChunkStrategy
+
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
 
 
@@ -30,6 +32,11 @@ class Settings(BaseSettings):
     data_dir: Path = Path("data")
     log_level: LogLevel = "INFO"
 
+    chunk_strategy: ChunkStrategy = ChunkStrategy.STRUCTURAL
+    chunk_max_tokens: int = 512
+    chunk_overlap_tokens: int = 64
+    chunk_min_tokens: int = 48
+
     anthropic_api_key: SecretStr | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
     llm_model: str = "claude-opus-5"
 
@@ -44,6 +51,19 @@ class Settings(BaseSettings):
         default="https://cloud.langfuse.com",
         validation_alias=AliasChoices("LANGFUSE_BASE_URL", "LANGFUSE_HOST"),
     )
+
+    @property
+    def sources_file(self) -> Path:
+        return self.data_dir / "sources.yaml"
+
+    @property
+    def raw_dir(self) -> Path:
+        """Downloaded source files; reproducible from sources.yaml, never versioned."""
+        return self.data_dir / "raw"
+
+    @property
+    def database_path(self) -> Path:
+        return self.data_dir / "index" / "corpus.db"
 
     @property
     def langfuse_configured(self) -> bool:
