@@ -1,0 +1,94 @@
+[project]
+name = "ai-act-copilot"
+version = "0.1.0"
+description = "Bilingual (FR/EN) assistant for EU AI regulation: from-scratch RAG + LangGraph agent, Langfuse tracing, eval harness"
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Ludvax", email = "ludovic.chauveau@gmail.com" }
+]
+keywords = ["rag", "llm", "agents", "langgraph", "ai-act", "gdpr", "evaluation"]
+requires-python = ">=3.12"
+dependencies = [
+    "langfuse>=4.15.2",
+    "pydantic>=2.13.5",
+    "pydantic-settings>=2.15.0",
+    "pyyaml>=6.0.3",
+    "rich>=15.0.0",
+    "typer>=0.27.2",
+]
+
+[project.scripts]
+aiact = "ai_act_copilot.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.11.18,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.168.0",
+    "mypy>=2.3.1",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.7",
+    "types-pyyaml>=6.0.12.20260906",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",  # pycodestyle
+    "F",       # pyflakes
+    "I",       # isort
+    "B",       # bugbear
+    "UP",      # pyupgrade
+    "SIM",     # simplify
+    "C4",      # comprehensions
+    "PTH",     # prefer pathlib
+    "RET",     # return statements
+    "N",       # naming
+    "S",       # bandit security checks
+    "PT",      # pytest style
+    "RUF",     # ruff-specific
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "S101",  # assertions are the point of tests
+    "S105",  # fake credentials in fixtures are not hardcoded secrets
+    "S106",
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+files = ["src", "tests"]
+mypy_path = ["src"]
+explicit_package_bases = true
+plugins = ["pydantic.mypy"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config", "--import-mode=importlib", "-m", "not integration"]
+markers = ["integration: requires live services (Ollama, Anthropic API, Langfuse)"]
+
+[tool.coverage.run]
+source = ["ai_act_copilot"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+skip_covered = true
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "@overload"]

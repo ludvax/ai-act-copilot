@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Tooling caches and reports
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Secrets — only the template is versioned
+.env
+.env.*
+!.env.example
+
+# Corpus downloads and built indexes are reproducible from data/sources.yaml
+data/raw/
+data/index/
+
+# Local planning notes (the public rationale lives in README.md and docs/adr/)
+plan_init.md
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
