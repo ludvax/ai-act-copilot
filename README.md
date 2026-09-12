@@ -4,7 +4,7 @@ Bilingual (FR/EN) assistant for EU AI regulation — the AI Act, the GDPR, and E
 Commission and CNIL guidance — built as a **from-scratch RAG system** with a **LangGraph
 agent**, **Langfuse observability** and an **evaluation harness**.
 
-> **Status:** work in progress — Milestone 3 (grounded answers). See the [roadmap](#roadmap).
+> **Status:** work in progress — Milestone 4 (agent and API). See the [roadmap](#roadmap).
 >
 > **Not legal advice.** Answers cite the source provisions so they can be checked; they do
 > not replace a lawyer.
@@ -54,7 +54,9 @@ ollama pull bge-m3               # the embedding model, 1.2 GB
 uv run aiact index               # embed the corpus (~18 min, cached afterwards)
 uv run aiact search "high-risk classification"   # inspect what retrieval returns
 uv run aiact ask "Which AI practices are prohibited?"   # needs an Anthropic key
+uv run aiact agent "Is a CV screening tool high-risk, and what must the employer do?"
 uv run aiact eval-retrieval -k 5 # measure retrieval configurations
+uv run aiact serve               # HTTP API on http://127.0.0.1:8000
 ```
 
 The corpus today: 7 documents, 1 287 provisions, 1 896 chunks (median 277 tokens, p95 484).
@@ -93,6 +95,55 @@ Two findings, both counter to the usual advice:
 Fifteen questions is a small sample: one case is worth 0.07. M5 re-runs this on the full
 golden set before the result is treated as settled.
 
+## The agent
+
+Most questions need one retrieval; some need several — classify a system, then derive the
+obligations that follow. A router decides which, so simple questions never pay for the loop
+and off-topic questions are refused after one cheap call.
+
+```mermaid
+flowchart LR
+    S[__start__] --> R{route}
+    R -->|lookup| G[rag_answer]
+    R -->|complex| A[agent]
+    R -->|out of scope| X[abstain]
+    A <-->|tool calls| T[tools]
+    A --> V[verify citations]
+    G --> V
+    V -->|unverifiable citation, once| A
+    V --> F[finalize]
+    X --> F
+    F --> E[__end__]
+```
+
+The graph is an explicit `StateGraph` rather than a prebuilt ReAct agent, because the parts
+worth trusting are the ones a prebuilt agent hides — see
+[ADR 0006](docs/adr/0006-explicit-langgraph-agent.md). Its nodes call the same Claude client
+as the non-agent path, so caching, cost accounting and tracing are identical.
+
+- **Tools:** `search_regulations`, `get_provision`, `get_definition`, and `submit_answer` as
+  the single terminal action, with strict schemas generated from Pydantic models.
+- **Guardrails in the edges:** step limit, cost limit, token limit, per-tool timeout, and
+  rejection of a tool call identical to one already made. A halted run says which limit fired.
+- **Citations are verified against what the run actually retrieved**, and the agent gets one
+  chance to fix a citation it cannot support.
+- **Conversations resume**: `--thread <id>` continues an earlier exchange from a SQLite
+  checkpoint.
+
+## HTTP API
+
+```bash
+uv run aiact serve
+curl -s localhost:8000/v1/agent -H 'content-type: application/json'   -d '{"question": "Quelles obligations pour le deployeur d un systeme a haut risque ?"}'
+```
+
+`POST /v1/ask` runs the single-retrieval path, `POST /v1/agent` the graph (pass `thread_id`
+to continue a conversation), `GET /health` is the liveness probe. Both answer paths return
+the citations, the route, the token usage and the cost of the call.
+
+The `Dockerfile` ships the code but not the index: build it once with `aiact ingest` and
+`aiact index`, then mount `data/` and point `AIACT_OLLAMA_BASE_URL` at your Ollama instance.
+
 ## Data sources and licences
 
 Legal texts are fetched by CELEX id from the EU Publications Office (Cellar), never scraped
@@ -120,7 +171,7 @@ pre-commit install     # runs the same checks on every commit
 - [x] **M1** Ingestion & chunking — Cellar downloads, provision-level parsing, two chunkers
 - [x] **M2** Embeddings & retrieval — cached bge-m3 vectors, numpy index, BM25, measured fusion
 - [x] **M3** LLM client, grounded generation with verified citations, tracing
-- [ ] **M4** LangGraph agent & HTTP API
+- [x] **M4** LangGraph agent & HTTP API — router, tools, guardrails, checkpoints, FastAPI
 - [ ] **M5** Evaluation harness & experiments
 - [ ] **M6** Documentation & v0.1.0 release
 

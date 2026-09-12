@@ -10,6 +10,9 @@ from rich.panel import Panel
 from rich.table import Table
 
 from ai_act_copilot import __version__
+from ai_act_copilot.agent.graph import open_checkpointer, run_agent
+from ai_act_copilot.agent.guardrails import Budget
+from ai_act_copilot.agent.nodes import AgentDeps
 from ai_act_copilot.config import get_settings
 from ai_act_copilot.embeddings.indexer import build_index, make_embedder
 from ai_act_copilot.evaluation.dataset import load_cases
@@ -220,6 +223,85 @@ def ask(
         f" · prompt {answer.prompt_version}[/dim]"
     )
     console.print("[dim]Not legal advice.[/dim]")
+
+
+@app.command()
+def agent(
+    question: Annotated[str, typer.Argument(help="Your question, in English or French.")],
+    thread: Annotated[
+        str | None, typer.Option("--thread", help="Continue an earlier conversation.")
+    ] = None,
+    language: Annotated[Language | None, typer.Option("--language")] = None,
+) -> None:
+    """Answer with the agent: it routes, calls tools and verifies its own citations."""
+    settings = get_settings()
+    if settings.anthropic_api_key is None:
+        console.print("[red]ANTHROPIC_API_KEY is not set. Add it to .env first.[/red]")
+        raise typer.Exit(code=1)
+
+    with (
+        CorpusStore(settings.database_path) as store,
+        VectorStore(settings.database_path) as vectors,
+    ):
+        deps = AgentDeps(
+            llm=AnthropicLLM(
+                settings.anthropic_api_key.get_secret_value(),
+                model=settings.llm_model,
+                effort=settings.llm_effort,
+                max_tokens=settings.llm_max_tokens,
+            ),
+            retriever=HybridRetriever(store, vectors, make_embedder(settings), settings=settings),
+            store=store,
+            budget=Budget(
+                max_steps=settings.agent_max_steps, max_cost_usd=settings.agent_max_cost_usd
+            ),
+        )
+        checkpointer = open_checkpointer(settings.data_dir / "index" / "threads.db")
+        try:
+            answer = run_agent(
+                question,
+                deps,
+                thread_id=thread,
+                checkpointer=checkpointer,
+                language=language,
+            )
+        except LLMError as error:
+            console.print(f"[red]{error}[/red]")
+            raise typer.Exit(code=1) from None
+
+    console.print(
+        Panel(
+            answer.text,
+            title=f"Agent · {answer.route} · {answer.steps} steps",
+            border_style="yellow" if answer.abstained else "green",
+        )
+    )
+    if answer.citations:
+        console.print("Sources: " + ", ".join(answer.citations))
+    if answer.halted_by:
+        console.print(f"[yellow]Guardrail: {answer.halted_by}[/yellow]")
+    console.print(
+        f"[dim]{answer.usage.input_tokens} in / {answer.usage.output_tokens} out"
+        f" · ${answer.cost_usd:.4f} · thread {answer.thread_id}[/dim]"
+    )
+    console.print("[dim]Not legal advice.[/dim]")
+
+
+@app.command()
+def serve(
+    host: Annotated[str | None, typer.Option("--host")] = None,
+    port: Annotated[int | None, typer.Option("--port")] = None,
+) -> None:
+    """Serve the HTTP API."""
+    import uvicorn
+
+    settings = get_settings()
+    uvicorn.run(
+        "ai_act_copilot.api.app:create_app",
+        factory=True,
+        host=host or settings.api_host,
+        port=port or settings.api_port,
+    )
 
 
 @app.command()

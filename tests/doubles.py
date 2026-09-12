@@ -2,6 +2,7 @@
 
 import hashlib
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -76,5 +77,64 @@ class FakeLLM:
             usage=usage,
             cost_usd=0.0,
             content=[],
+            parsed=parsed,
+        )
+
+
+@dataclass(slots=True)
+class Turn:
+    """One scripted model turn: what it says, what it calls, and why it stopped."""
+
+    content: list[dict[str, Any]] = field(default_factory=list)
+    stop_reason: str = "end_turn"
+    payload: dict[str, Any] | None = None  # used when the caller asks for structured output
+
+
+def says(text: str) -> Turn:
+    return Turn(content=[{"type": "text", "text": text}])
+
+
+def calls(name: str, arguments: dict[str, Any], call_id: str = "call_1") -> Turn:
+    return Turn(
+        content=[{"type": "tool_use", "id": call_id, "name": name, "input": arguments}],
+        stop_reason="tool_use",
+    )
+
+
+def decides(**payload: Any) -> Turn:
+    """A structured-output turn, e.g. the router's decision."""
+    return Turn(payload=payload)
+
+
+class ScriptedLLM:
+    """Plays a fixed sequence of turns, so an agent run is deterministic and free."""
+
+    def __init__(self, *turns: Turn, model: str = "fake-claude") -> None:
+        self.model = model
+        self.turns = list(turns)
+        self.calls: list[dict[str, Any]] = []
+
+    def complete(
+        self,
+        *,
+        system: str,
+        messages: Sequence[Message],
+        max_tokens: int | None = None,
+        tools: Sequence[dict[str, Any]] | None = None,
+        output_format: type[BaseModel] | None = None,
+    ) -> LLMResult:
+        self.calls.append({"system": system, "messages": list(messages), "tools": tools})
+        turn = self.turns.pop(0) if self.turns else says("No further scripted turn.")
+        parsed = output_format(**(turn.payload or {})) if output_format is not None else None
+        text = " ".join(
+            str(block.get("text", "")) for block in turn.content if block.get("type") == "text"
+        )
+        return LLMResult(
+            text=text,
+            model=self.model,
+            stop_reason=turn.stop_reason,
+            usage=Usage(input_tokens=100, output_tokens=50),
+            cost_usd=0.001,
+            content=turn.content,
             parsed=parsed,
         )

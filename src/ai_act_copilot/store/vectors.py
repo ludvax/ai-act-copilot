@@ -51,7 +51,8 @@ class VectorStore:
     def __init__(self, path: Path) -> None:
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(path)
+        # Shared across threads: the HTTP API serves sync endpoints from a pool.
+        self._connection = sqlite3.connect(path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._connection.executescript(_SCHEMA)
 
