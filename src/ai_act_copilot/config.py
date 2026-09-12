@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     llm_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
     llm_max_tokens: int = 8000
 
+    judge_model: str = "claude-opus-5"
+
     agent_max_steps: int = 8
     agent_max_cost_usd: float = 0.50
     api_host: str = "127.0.0.1"

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from ai_act_copilot.config import Settings
 from ai_act_copilot.embeddings.base import Embedder
 from ai_act_copilot.embeddings.indexer import make_embedder
-from ai_act_copilot.evaluation.dataset import RetrievalCase
+from ai_act_copilot.evaluation.dataset import GoldenCase
 from ai_act_copilot.evaluation.retrieval_metrics import CaseOutcome, RetrievalScores, score
 from ai_act_copilot.models import ChunkStrategy
 from ai_act_copilot.observability.tracing import observe
@@ -55,7 +55,7 @@ class ConfigurationScore:
 @observe(name="eval-retrieval", capture_input=False, capture_output=False)
 def compare_configurations(
     settings: Settings,
-    cases: Sequence[RetrievalCase],
+    cases: Sequence[GoldenCase],
     *,
     k: int = 5,
     strategy: ChunkStrategy | None = None,
@@ -79,7 +79,7 @@ def compare_configurations(
 
 def _run_case(
     retriever: HybridRetriever,
-    case: RetrievalCase,
+    case: GoldenCase,
     *,
     k: int,
     config: RetrievalConfig,

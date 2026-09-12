@@ -1,0 +1,77 @@
+name: Evaluation
+
+# Manual: a full run rebuilds the index (~20 min) and, with judges on, spends real money.
+# Nothing here runs on push.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Which answer path to measure
+        type: choice
+        options: [retrieval, rag, agent]
+        default: retrieval
+      limit:
+        description: Number of cases (blank = all)
+        type: string
+        default: "10"
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    name: ${{ inputs.mode }} evaluation
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+
+      # The corpus and its embeddings are deterministic, so they are worth caching.
+      - name: Restore corpus and index
+        id: corpus
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: data
+          key: corpus-${{ hashFiles('data/sources.yaml', 'src/ai_act_copilot/chunking/**') }}
+
+      - name: Install Ollama and the embedding model
+        if: steps.corpus.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve &
+          sleep 5
+          ollama pull bge-m3
+
+      - name: Build the corpus
+        if: steps.corpus.outputs.cache-hit != 'true'
+        run: |
+          uv run aiact ingest --download
+          uv run aiact index
+
+      - name: Retrieval evaluation
+        if: inputs.mode == 'retrieval'
+        run: uv run aiact eval-retrieval -k 5
+
+      - name: Answer evaluation
+        if: inputs.mode != 'retrieval'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+        run: >
+          uv run aiact eval-answers --mode ${{ inputs.mode }}
+          ${{ inputs.limit && format('--limit {0}', inputs.limit) || '' }}
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: eval-${{ inputs.mode }}
+          path: evals/results/
+          if-no-files-found: ignore

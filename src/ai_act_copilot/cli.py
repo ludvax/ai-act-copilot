@@ -1,7 +1,9 @@
 """Command-line interface, installed as ``aiact``."""
 
+import json
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Annotated
 
 import typer
@@ -15,7 +17,12 @@ from ai_act_copilot.agent.guardrails import Budget
 from ai_act_copilot.agent.nodes import AgentDeps
 from ai_act_copilot.config import get_settings
 from ai_act_copilot.embeddings.indexer import build_index, make_embedder
-from ai_act_copilot.evaluation.dataset import load_cases
+from ai_act_copilot.evaluation.answer_runner import Mode, run_answers
+from ai_act_copilot.evaluation.calibration import compare, load_labels
+from ai_act_copilot.evaluation.calibration import to_markdown as agreement_table
+from ai_act_copilot.evaluation.dataset import load_cases, review_rate
+from ai_act_copilot.evaluation.judges import LLMJudge
+from ai_act_copilot.evaluation.report import TABLE_HEADER, summary_row, write_report
 from ai_act_copilot.evaluation.retrieval_runner import compare_configurations
 from ai_act_copilot.generation.answer import answer_question
 from ai_act_copilot.ingestion.pipeline import ingest as run_ingest
@@ -302,6 +309,104 @@ def serve(
         host=host or settings.api_host,
         port=port or settings.api_port,
     )
+
+
+@app.command(name="eval-answers")
+def eval_answers(
+    dataset: Annotated[Path, typer.Option("--dataset")] = Path("evals/datasets/golden_v1.jsonl"),
+    mode: Annotated[Mode, typer.Option("--mode", help="Which answer path to measure.")] = Mode.RAG,
+    judge: Annotated[bool, typer.Option("--judge/--no-judge", help="Run the LLM judges.")] = True,
+    limit: Annotated[int | None, typer.Option("--limit", help="First N cases only.")] = None,
+    output: Annotated[Path, typer.Option("--output")] = Path("evals/results"),
+) -> None:
+    """Answer the golden set and grade it. Writes a JSON and a Markdown report."""
+    settings = get_settings()
+    if settings.anthropic_api_key is None:
+        console.print("[red]ANTHROPIC_API_KEY is not set. Add it to .env first.[/red]")
+        raise typer.Exit(code=1)
+
+    cases = load_cases(dataset)[:limit] if limit else load_cases(dataset)
+    if review_rate(cases) < 1.0:
+        console.print(
+            f"[yellow]{review_rate(cases):.0%} of this dataset is human-reviewed; "
+            "treat the numbers as provisional.[/yellow]"
+        )
+
+    key = settings.anthropic_api_key.get_secret_value()
+    with (
+        CorpusStore(settings.database_path) as store,
+        VectorStore(settings.database_path) as vectors,
+    ):
+        retriever = HybridRetriever(store, vectors, make_embedder(settings), settings=settings)
+        llm = AnthropicLLM(
+            key,
+            model=settings.llm_model,
+            effort=settings.llm_effort,
+            max_tokens=settings.llm_max_tokens,
+        )
+        deps = AgentDeps(
+            llm=llm,
+            retriever=retriever,
+            store=store,
+            budget=Budget(
+                max_steps=settings.agent_max_steps, max_cost_usd=settings.agent_max_cost_usd
+            ),
+        )
+        try:
+            run = run_answers(
+                cases,
+                mode=mode,
+                llm=llm,
+                retriever=retriever,
+                store=store,
+                judge=LLMJudge(AnthropicLLM(key, model=settings.judge_model)) if judge else None,
+                agent_deps=deps,
+                label=f"{mode.value}-{settings.llm_model}",
+            )
+        except LLMError as error:
+            console.print(f"[red]{error}[/red]")
+            raise typer.Exit(code=1) from None
+
+    json_path, markdown_path = write_report(
+        run, output, judge_model=settings.judge_model if judge else "none", dataset=dataset.name
+    )
+    console.print(TABLE_HEADER)
+    console.print(summary_row(run.summary))
+    console.print("")
+    console.print(f"Reports: {markdown_path} - {json_path}")
+
+
+@app.command(name="eval-calibrate")
+def eval_calibrate(
+    run_json: Annotated[Path, typer.Argument(help="A run.json written by eval-answers.")],
+    labels: Annotated[Path, typer.Option("--labels", help="Your scores, as JSONL.")] = Path(
+        "evals/human_labels.jsonl"
+    ),
+) -> None:
+    """Check the judges against human scores before trusting their numbers."""
+    if not labels.is_file():
+        console.print(
+            f"[red]{labels} not found.[/red] Copy evals/human_labels.example.jsonl and score "
+            "about twenty cases by hand."
+        )
+        raise typer.Exit(code=1)
+
+    cases = json.loads(run_json.read_text(encoding="utf-8"))["cases"]
+    graded = [
+        SimpleNamespace(
+            case_id=case["id"],
+            faithfulness=case.get("faithfulness"),
+            correctness=case.get("correctness"),
+        )
+        for case in cases
+    ]
+    agreements = compare(graded, load_labels(labels))
+    console.print(agreement_table(agreements))
+    if any(not agreement.usable for agreement in agreements):
+        console.print(
+            "[yellow]Cohen's kappa below 0.4 on at least one metric: the judge does not yet "
+            "agree with you enough to be quoted.[/yellow]"
+        )
 
 
 @app.command()

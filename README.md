@@ -4,7 +4,7 @@ Bilingual (FR/EN) assistant for EU AI regulation — the AI Act, the GDPR, and E
 Commission and CNIL guidance — built as a **from-scratch RAG system** with a **LangGraph
 agent**, **Langfuse observability** and an **evaluation harness**.
 
-> **Status:** work in progress — Milestone 4 (agent and API). See the [roadmap](#roadmap).
+> **Status:** work in progress — Milestone 5 (evaluation). See the [roadmap](#roadmap).
 >
 > **Not legal advice.** Answers cite the source provisions so they can be checked; they do
 > not replace a lawyer.
@@ -55,7 +55,8 @@ uv run aiact index               # embed the corpus (~18 min, cached afterwards)
 uv run aiact search "high-risk classification"   # inspect what retrieval returns
 uv run aiact ask "Which AI practices are prohibited?"   # needs an Anthropic key
 uv run aiact agent "Is a CV screening tool high-risk, and what must the employer do?"
-uv run aiact eval-retrieval -k 5 # measure retrieval configurations
+uv run aiact eval-retrieval -k 5 # retrieval metrics, no API key needed
+uv run aiact eval-answers --mode rag --limit 10   # grade answers (spends money)
 uv run aiact serve               # HTTP API on http://127.0.0.1:8000
 ```
 
@@ -144,6 +145,36 @@ the citations, the route, the token usage and the cost of the call.
 The `Dockerfile` ships the code but not the index: build it once with `aiact ingest` and
 `aiact index`, then mount `data/` and point `AIACT_OLLAMA_BASE_URL` at your Ollama instance.
 
+## Evaluation
+
+Every architectural claim in this repository is supposed to be measured, which only means
+something if the measurement is trustworthy. The harness is built accordingly:
+
+- **Deterministic checks first.** Whether the answer cited provisions the run actually
+  retrieved, whether it abstained when it should have, and whether the router picked the
+  labelled path are facts — computed in code, for free, on every run. Judges are reserved
+  for grounding and substantive correctness.
+- **Two judges on separate prompts.** Faithfulness sees the passages but not the reference
+  answer; correctness sees the reference but not the passages. Both score 0–2.
+- **The judges are themselves checked.** `aiact eval-calibrate` compares them with human
+  scores and reports Cohen's kappa — chance-corrected, because most answers score 2 and a
+  judge that always says "2" would otherwise look excellent. Below 0.4 it is reported as
+  unusable rather than quietly trusted.
+- **Abstention is measured, not assumed.** The golden set contains out-of-scope questions
+  and false premises, where declining is the correct answer.
+- **Reports carry their caveats**: dataset, human-review rate, judge model and run cost.
+
+```bash
+uv run aiact eval-answers --mode agent --limit 10
+uv run aiact eval-calibrate evals/results/<run>/run.json --labels evals/human_labels.jsonl
+```
+
+The golden set is `evals/datasets/golden_v1.jsonl`: 40 cases in French and English, labelled
+by provision, spanning lookups, definitions, explicit citations, scenarios, dates,
+cross-regulation questions, out-of-scope questions and false premises. **It is drafted and
+not yet human-reviewed**, so answer-level numbers are provisional and every report says so.
+See [ADR 0007](docs/adr/0007-evaluation-harness.md).
+
 ## Data sources and licences
 
 Legal texts are fetched by CELEX id from the EU Publications Office (Cellar), never scraped
@@ -172,7 +203,7 @@ pre-commit install     # runs the same checks on every commit
 - [x] **M2** Embeddings & retrieval — cached bge-m3 vectors, numpy index, BM25, measured fusion
 - [x] **M3** LLM client, grounded generation with verified citations, tracing
 - [x] **M4** LangGraph agent & HTTP API — router, tools, guardrails, checkpoints, FastAPI
-- [ ] **M5** Evaluation harness & experiments
+- [x] **M5** Evaluation harness — golden set, judges, calibration, reports
 - [ ] **M6** Documentation & v0.1.0 release
 
 ## License
