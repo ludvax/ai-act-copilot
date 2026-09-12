@@ -9,6 +9,8 @@ from ai_act_copilot.observability.tracing import init_tracing
 _ENV_PREFIXES = ("AIACT_", "ANTHROPIC_", "LANGFUSE_")
 
 FIXTURES = Path(__file__).parent / "fixtures"
+# Tests run in an isolated temporary directory, so repo files need absolute paths.
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -1,17 +1,28 @@
 """Command-line interface, installed as ``aiact``."""
 
 import logging
+from pathlib import Path
 from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
 
 from ai_act_copilot import __version__
 from ai_act_copilot.config import get_settings
+from ai_act_copilot.embeddings.indexer import build_index, make_embedder
+from ai_act_copilot.evaluation.dataset import load_cases
+from ai_act_copilot.evaluation.retrieval_runner import compare_configurations
+from ai_act_copilot.generation.answer import answer_question
 from ai_act_copilot.ingestion.pipeline import ingest as run_ingest
-from ai_act_copilot.models import ChunkStrategy
+from ai_act_copilot.llm.anthropic_client import AnthropicLLM
+from ai_act_copilot.llm.base import LLMError
+from ai_act_copilot.models import ChunkStrategy, Language
 from ai_act_copilot.observability.tracing import TracingStatus, flush_tracing, init_tracing
+from ai_act_copilot.retrieval.hybrid import HybridRetriever
+from ai_act_copilot.store.sqlite import CorpusStore
+from ai_act_copilot.store.vectors import VectorStore
 
 app = typer.Typer(
     help="Bilingual assistant for EU AI regulation (AI Act, GDPR).",
@@ -77,6 +88,138 @@ def ingest(
         )
     console.print(table)
     console.print(f"Store: {settings.database_path}")
+
+
+@app.command()
+def index(
+    strategy: Annotated[
+        ChunkStrategy | None, typer.Option("--strategy", help="Which chunking to embed.")
+    ] = None,
+) -> None:
+    """Embed the corpus into the vector store, reusing cached vectors."""
+    settings = get_settings()
+    report = build_index(settings, strategy=strategy)
+    console.print(
+        f"[bold]{report.model}[/bold] · {report.strategy} · {report.chunks} chunks · "
+        f"{report.embedded} embedded · {report.reused} reused "
+        f"({report.cache_hit_rate:.0%} cache hits)"
+    )
+
+
+@app.command()
+def search(
+    query: Annotated[str, typer.Argument(help="Question or keywords.")],
+    k: Annotated[int, typer.Option("-k", help="How many passages to show.")] = 8,
+    language: Annotated[
+        Language | None, typer.Option("--language", help="Force the corpus language.")
+    ] = None,
+    strategy: Annotated[ChunkStrategy | None, typer.Option("--strategy")] = None,
+) -> None:
+    """Show the passages a question retrieves, and which signal found them."""
+    settings = get_settings()
+    with (
+        CorpusStore(settings.database_path) as store,
+        VectorStore(settings.database_path) as vectors,
+    ):
+        retriever = HybridRetriever(
+            store, vectors, make_embedder(settings), settings=settings, strategy=strategy
+        )
+        hits = retriever.search(query, language=language, limit=k)
+
+    if not hits:
+        console.print("[yellow]No results. Have you run `aiact ingest` and `aiact index`?[/yellow]")
+        raise typer.Exit(code=1)
+
+    table = Table(title=f"Top {len(hits)} passages")
+    table.add_column("#", justify="right")
+    table.add_column("Signals")
+    table.add_column("Provision")
+    table.add_column("Passage")
+    for hit in hits:
+        signals = "+".join(sorted(hit.components))
+        table.add_row(
+            str(hit.rank),
+            f"{signals}{' *' if hit.matched_reference else ''}",
+            ", ".join(hit.provision_ids) or "-",
+            " ".join(hit.chunk.text[:140].split()) + "...",
+        )
+    console.print(table)
+
+
+@app.command(name="eval-retrieval")
+def eval_retrieval(
+    dataset: Annotated[Path, typer.Option("--dataset", help="JSONL golden dataset.")] = Path(
+        "evals/datasets/retrieval_mini.jsonl"
+    ),
+    k: Annotated[int, typer.Option("-k", help="Cut-off for the metrics.")] = 5,
+    strategy: Annotated[ChunkStrategy | None, typer.Option("--strategy")] = None,
+) -> None:
+    """Compare retrieval configurations on a golden dataset."""
+    settings = get_settings()
+    cases = load_cases(dataset)
+    results = compare_configurations(settings, cases, k=k, strategy=strategy)
+
+    table = Table(title=f"Retrieval on {dataset.name} ({len(cases)} questions, k={k})")
+    table.add_column("Configuration")
+    for column in (f"hit@{k}", f"recall@{k}", "MRR", "nDCG"):
+        table.add_column(column, justify="right")
+    table.add_column("Missed")
+    for result in results:
+        table.add_row(*result.scores.as_row(result.label), ", ".join(result.scores.misses) or "-")
+    console.print(table)
+
+
+@app.command()
+def ask(
+    question: Annotated[str, typer.Argument(help="Your question, in English or French.")],
+    k: Annotated[int | None, typer.Option("-k", help="Passages to ground the answer on.")] = None,
+    language: Annotated[Language | None, typer.Option("--language")] = None,
+    strategy: Annotated[ChunkStrategy | None, typer.Option("--strategy")] = None,
+) -> None:
+    """Answer a question from the corpus, with citations."""
+    settings = get_settings()
+    if settings.anthropic_api_key is None:
+        console.print("[red]ANTHROPIC_API_KEY is not set. Add it to .env first.[/red]")
+        raise typer.Exit(code=1)
+
+    with (
+        CorpusStore(settings.database_path) as store,
+        VectorStore(settings.database_path) as vectors,
+    ):
+        retriever = HybridRetriever(
+            store, vectors, make_embedder(settings), settings=settings, strategy=strategy
+        )
+        llm = AnthropicLLM(
+            settings.anthropic_api_key.get_secret_value(),
+            model=settings.llm_model,
+            effort=settings.llm_effort,
+            max_tokens=settings.llm_max_tokens,
+        )
+        try:
+            answer = answer_question(
+                question, retriever=retriever, llm=llm, language=language, limit=k
+            )
+        except LLMError as error:
+            # An API failure is an operational problem, not a stack trace for the user.
+            console.print(f"[red]{error}[/red]")
+            raise typer.Exit(code=1) from None
+
+    console.print(
+        Panel(
+            answer.text, title="Answer", border_style="green" if not answer.abstained else "yellow"
+        )
+    )
+    if answer.citations:
+        console.print("Sources: " + ", ".join(answer.citations))
+    if answer.citation_check.invalid:
+        dropped = ", ".join(answer.citation_check.invalid)
+        console.print(f"[yellow]Dropped unsupported citations: {dropped}[/yellow]")
+    console.print(
+        f"[dim]{answer.model} · {answer.usage.input_tokens} in / {answer.usage.output_tokens} out"
+        f" · {answer.usage.cache_read_tokens} cached · ${answer.cost_usd:.4f}"
+        f" · prompt {answer.prompt_version}[/dim]"
+    )
+    console.print("[dim]Not legal advice.[/dim]")
 
 
 @app.command()

@@ -1,0 +1,15 @@
+{"id": "r01", "question": "Which AI practices are prohibited?", "language": "en", "expected_provisions": ["ai_act:art:5"], "category": "lookup"}
+{"id": "r02", "question": "Quelles pratiques en matiere d'IA sont interdites ?", "language": "fr", "expected_provisions": ["ai_act:art:5"], "category": "lookup"}
+{"id": "r03", "question": "What does Article 6(2) say about high-risk classification?", "language": "en", "expected_provisions": ["ai_act:art:6"], "category": "citation"}
+{"id": "r04", "question": "Que dit l'article 6, paragraphe 2, sur les systemes a haut risque ?", "language": "fr", "expected_provisions": ["ai_act:art:6"], "category": "citation"}
+{"id": "r05", "question": "How does the AI Act define an AI system?", "language": "en", "expected_provisions": ["ai_act:art:3"], "category": "definition"}
+{"id": "r06", "question": "Comment le reglement definit-il un systeme d'IA ?", "language": "fr", "expected_provisions": ["ai_act:art:3"], "category": "definition"}
+{"id": "r07", "question": "Which systems are listed as high-risk in Annex III?", "language": "en", "expected_provisions": ["ai_act:anx:III"], "category": "citation"}
+{"id": "r08", "question": "What obligations apply to deployers of high-risk AI systems?", "language": "en", "expected_provisions": ["ai_act:art:26"], "category": "concept"}
+{"id": "r09", "question": "A partir de quand le reglement sur l'IA s'applique-t-il ?", "language": "fr", "expected_provisions": ["ai_act:art:113"], "category": "temporal"}
+{"id": "r10", "question": "What transparency obligations apply to chatbots and emotion recognition?", "language": "en", "expected_provisions": ["ai_act:art:50"], "category": "concept"}
+{"id": "r11", "question": "What obligations do providers of general-purpose AI models have?", "language": "en", "expected_provisions": ["ai_act:art:53"], "category": "concept"}
+{"id": "r12", "question": "When is processing of personal data lawful?", "language": "en", "expected_provisions": ["gdpr:art:6"], "category": "concept"}
+{"id": "r13", "question": "Quels sont les droits d'acces de la personne concernee ?", "language": "fr", "expected_provisions": ["gdpr:art:15"], "category": "concept"}
+{"id": "r14", "question": "What must a data protection impact assessment contain?", "language": "en", "expected_provisions": ["gdpr:art:35"], "category": "concept"}
+{"id": "r15", "question": "Qu'est-ce qu'une donnee a caractere personnel ?", "language": "fr", "expected_provisions": ["gdpr:art:4"], "category": "definition"}

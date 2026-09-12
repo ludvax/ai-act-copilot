@@ -10,14 +10,17 @@ authors = [
 keywords = ["rag", "llm", "agents", "langgraph", "ai-act", "gdpr", "evaluation"]
 requires-python = ">=3.12"
 dependencies = [
+    "anthropic>=1.5.0",
     "httpx>=0.28.1",
     "langfuse>=4.15.2",
     "lxml>=6.1.3",
+    "numpy>=2.5.3",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
     "pypdf>=6.18.1",
     "pyyaml>=6.0.3",
     "rich>=15.0.0",
+    "snowballstemmer>=3.1.1",
     "tokenizers>=0.23.2",
     "typer>=0.27.2",
 ]
@@ -63,6 +66,8 @@ select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+# This module deliberately handles the typographic apostrophe used in French legal text.
+"src/ai_act_copilot/store/text_analysis.py" = ["RUF001"]
 "tests/**" = [
     "S101",  # assertions are the point of tests
     "S105",  # fake credentials in fixtures are not hardcoded secrets
@@ -97,3 +102,7 @@ fail_under = 85
 show_missing = true
 skip_covered = true
 exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "@overload"]
+
+[[tool.mypy.overrides]]
+module = ["snowballstemmer.*"]
+ignore_missing_imports = true

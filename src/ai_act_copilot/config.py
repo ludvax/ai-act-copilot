@@ -37,8 +37,16 @@ class Settings(BaseSettings):
     chunk_overlap_tokens: int = 64
     chunk_min_tokens: int = 48
 
+    embedding_model: str = "bge-m3"
+    ollama_base_url: str = "http://localhost:11434"
+    retrieval_top_k: int = 8
+    retrieval_candidates: int = 40
+    rrf_k: int = 60
+
     anthropic_api_key: SecretStr | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
     llm_model: str = "claude-opus-5"
+    llm_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
+    llm_max_tokens: int = 8000
 
     tracing_enabled: bool = True
     langfuse_public_key: SecretStr | None = Field(

@@ -15,7 +15,13 @@ from langfuse import Langfuse, get_client, observe
 from ai_act_copilot import __version__
 from ai_act_copilot.config import Settings
 
-__all__ = ["TracingStatus", "flush_tracing", "init_tracing", "observe"]
+__all__ = [
+    "TracingStatus",
+    "flush_tracing",
+    "init_tracing",
+    "observe",
+    "record_generation",
+]
 
 # The SDK logs authentication warnings when constructed without keys, even with tracing
 # disabled. Placeholder keys keep a disabled client silent (the SDK does the same internally).
@@ -56,3 +62,24 @@ def _init_disabled(reason: str) -> TracingStatus:
 def flush_tracing() -> None:
     """Export buffered spans. Short-lived processes must call this before exiting."""
     get_client().flush()
+
+
+def record_generation(
+    *,
+    model: str,
+    usage_details: dict[str, int],
+    cost_usd: float,
+    metadata: dict[str, object] | None = None,
+) -> None:
+    """Attach model, token usage and cost to the active generation span.
+
+    A no-op when tracing is disabled, so callers never branch on it. Costs are recorded
+    from the usage the API reported rather than estimated, which is what makes the Langfuse
+    cost view trustworthy.
+    """
+    get_client().update_current_generation(
+        model=model,
+        usage_details=usage_details,
+        cost_details={"total": cost_usd},
+        metadata=metadata,
+    )

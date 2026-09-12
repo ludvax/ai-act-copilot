@@ -31,3 +31,10 @@ def test_info_reports_configuration_without_leaking_secrets(
     assert "claude-opus-5" in result.output
     assert "sk-ant-very-secret" not in result.output
     assert "disabled" in result.output  # no Langfuse keys in the test environment
+
+
+def test_ask_without_an_api_key_explains_what_to_do() -> None:
+    result = runner.invoke(app, ["ask", "Which practices are prohibited?"])
+
+    assert result.exit_code == 1
+    assert "ANTHROPIC_API_KEY" in result.output
