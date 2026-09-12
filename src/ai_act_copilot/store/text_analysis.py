@@ -51,6 +51,15 @@ _ENGLISH_WORDS = """
 FRENCH_STOPWORDS = frozenset(_FRENCH_WORDS.split()) | _ELISIONS
 ENGLISH_STOPWORDS = frozenset(_ENGLISH_WORDS.split())
 
+# Short queries carry no stopwords: "article 6 paragraphe 2" would otherwise look English.
+# These words appear in French legal questions and in no English one.
+_FRENCH_MARKER_WORDS = """
+    paragraphe paragraphes annexe considerant considerants reglement systeme systemes
+    donnees traitement deployeur fournisseur interdites entreprise
+"""
+_FRENCH_MARKERS = frozenset(_FRENCH_MARKER_WORDS.split())
+_FRENCH_ACCENTS = frozenset("àâçèéêëîïôùû")
+
 _STOPWORDS = {Language.FR: FRENCH_STOPWORDS, Language.EN: ENGLISH_STOPWORDS}
 _SNOWBALL = {Language.FR: "french", Language.EN: "english"}
 
@@ -77,11 +86,16 @@ def analyse(text: str, language: Language) -> list[str]:
 
 
 def detect_language(text: str) -> Language:
-    """Guess the language of a query from stopword overlap, defaulting to English."""
+    """Guess the language of a query, defaulting to English when nothing points either way."""
+    if _FRENCH_ACCENTS & set(text.lower()):
+        return Language.FR
+
     words = {
         _strip_accents(match.group(0).lower())
         for match in _TOKEN.finditer(text.replace(APOSTROPHE, "'"))
     }
+    if words & _FRENCH_MARKERS:
+        return Language.FR
     french = len(words & {_strip_accents(word) for word in FRENCH_STOPWORDS})
     english = len(words & ENGLISH_STOPWORDS)
     return Language.FR if french > english else Language.EN

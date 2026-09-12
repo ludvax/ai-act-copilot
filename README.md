@@ -1,10 +1,16 @@
 # AI Act Copilot
 
+[![CI](https://github.com/ludvax/ai-act-copilot/actions/workflows/ci.yml/badge.svg)](https://github.com/ludvax/ai-act-copilot/actions/workflows/ci.yml)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Bilingual (FR/EN) assistant for EU AI regulation — the AI Act, the GDPR, and European
 Commission and CNIL guidance — built as a **from-scratch RAG system** with a **LangGraph
 agent**, **Langfuse observability** and an **evaluation harness**.
 
-> **Status:** work in progress — Milestone 5 (evaluation). See the [roadmap](#roadmap).
+> **Status:** v0.1.0 — the full pipeline works end to end. Two things are honestly not
+> done: answer-level metrics have not been run against the live model, and the golden set
+> is drafted rather than human-reviewed. See [limitations](docs/architecture.md#limitations).
 >
 > **Not legal advice.** Answers cite the source provisions so they can be checked; they do
 > not replace a lawyer.
@@ -16,6 +22,8 @@ must be grounded in exact provisions ("Article 6(2)", "Annex III"), the corpus i
 bilingual, and "I don't know" is often the correct answer. The project is built the way a
 Forward Deployed Engineer would build a client system — every architectural choice is
 recorded in an [ADR](docs/adr/) and, where possible, justified by evaluation results.
+
+The full walkthrough is in [docs/architecture.md](docs/architecture.md).
 
 ## Planned architecture
 
@@ -68,6 +76,30 @@ The corpus today: 7 documents, 1 287 provisions, 1 896 chunks (median 277 tokens
 | GDPR — Regulation (EU) 2016/679 | EN, FR | 272 each (173 recitals, 99 articles) |
 | Commission guidelines — AI system definition, prohibited practices | EN | 130 sections |
 | CNIL — AI development checklist | FR | 1 section (unnumbered headings — see [ADR 0003](docs/adr/0003-structure-aware-chunking.md)) |
+
+## A worked example
+
+Retrieval runs entirely locally, so this is reproducible without any API key:
+
+```console
+$ uv run aiact search "high-risk classification of AI systems" -k 3
+                                Top 3 passages
+┌───┬─────────┬───────────────┬───────────────────────────────────────────────┐
+│ # │ Signals │ Provision     │ Passage                                       │
+├───┼─────────┼───────────────┼───────────────────────────────────────────────┤
+│ 1 │ dense   │ ai_act:art:6  │ 1 Irrespective of whether an AI system is     │
+│   │         │               │ placed on the market or put into service...   │
+│ 2 │ dense   │ ai_act:rct:52 │ As regards stand-alone AI systems, namely     │
+│   │         │               │ high-risk AI systems other than those...      │
+└───┴─────────┴───────────────┴───────────────────────────────────────────────┘
+
+$ uv run aiact search "article 6 paragraphe 2" -k 2
+│ 1 │ dense+reference * │ ai_act:art:6 │ 4 A provider who considers that an ...
+```
+
+The `Signals` column shows which retrieval signal found each passage, and `*` marks a
+passage pulled in because the question cited it explicitly — so a bad answer can always be
+traced back to the step that produced it.
 
 ## Measured retrieval
 
@@ -204,7 +236,7 @@ pre-commit install     # runs the same checks on every commit
 - [x] **M3** LLM client, grounded generation with verified citations, tracing
 - [x] **M4** LangGraph agent & HTTP API — router, tools, guardrails, checkpoints, FastAPI
 - [x] **M5** Evaluation harness — golden set, judges, calibration, reports
-- [ ] **M6** Documentation & v0.1.0 release
+- [x] **M6** Documentation & v0.1.0 release — architecture write-up, ADRs, worked example
 
 ## License
 

@@ -1,4 +1,4 @@
-# 4. Brute-force vector search in SQLite, and hybrid retrieval by rank fusion
+# 4. Brute-force vector search in SQLite, and a measured mix of retrieval signals
 
 - Status: accepted
 - Date: 2026-09-12

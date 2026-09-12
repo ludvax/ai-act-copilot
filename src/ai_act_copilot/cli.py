@@ -2,6 +2,8 @@
 
 import json
 import logging
+import sys
+from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Annotated
@@ -34,11 +36,29 @@ from ai_act_copilot.retrieval.hybrid import HybridRetriever
 from ai_act_copilot.store.sqlite import CorpusStore
 from ai_act_copilot.store.vectors import VectorStore
 
+
+def _force_utf8_output() -> None:
+    """Windows consoles default to a legacy code page and crash on corpus characters.
+
+    The corpus is European legal text plus guidance PDFs: it contains typographic dashes,
+    accents and the occasional emoji. Printing must never be what fails.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        encoding = getattr(stream, "encoding", "") or ""
+        if encoding.lower().replace("-", "") != "utf8":
+            with suppress(AttributeError, ValueError):
+                stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+
+
+_force_utf8_output()
+
 app = typer.Typer(
     help="Bilingual assistant for EU AI regulation (AI Act, GDPR).",
     no_args_is_help=True,
 )
-console = Console()
+# Emoji substitution off: provision ids contain :art:, which Rich would turn into an
+# emoji - and then fail to encode it on a legacy Windows console.
+console = Console(emoji=False)
 
 
 def _print_version(value: bool) -> None:

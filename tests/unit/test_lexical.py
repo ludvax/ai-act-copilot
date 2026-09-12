@@ -79,3 +79,26 @@ def test_bm25_scores_are_deterministic_for_ties() -> None:
 
 def test_empty_index_returns_nothing() -> None:
     assert BM25Index.build([]).search(["anything"], limit=5) == []
+
+
+def test_short_citation_queries_are_detected_by_domain_words() -> None:
+    # No stopwords at all: the earlier version fell back to English and searched the wrong
+    # half of the corpus.
+    assert detect_language("article 6 paragraphe 2") is Language.FR
+    assert detect_language("annexe III") is Language.FR
+    assert detect_language("Article 6(2)") is Language.EN
+    assert detect_language("Annex III") is Language.EN
+
+
+def test_accents_alone_identify_french() -> None:
+    assert detect_language("systeme a haut risque") is Language.FR  # domain marker
+    assert detect_language("données à caractère personnel") is Language.FR
+
+
+def test_english_questions_are_not_dragged_into_french() -> None:
+    for question in (
+        "What obligations apply to providers?",
+        "Which systems are high-risk?",
+        "How is an AI system defined?",
+    ):
+        assert detect_language(question) is Language.EN
