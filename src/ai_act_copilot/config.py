@@ -1,15 +1,19 @@
 """Application settings, loaded from environment variables and an optional ``.env`` file."""
 
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AliasChoices, Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ai_act_copilot.models import ChunkStrategy
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
+
+# What Langfuse accepts as an environment name; rejected at ingestion, so check it here.
+_ENVIRONMENT = re.compile(r"^[a-z0-9_-]{1,40}$")
 
 
 class Settings(BaseSettings):
@@ -56,6 +60,14 @@ class Settings(BaseSettings):
     api_port: int = 8000
 
     tracing_enabled: bool = True
+    environment: str = Field(
+        default="development",
+        description="Langfuse environment: keeps local and CI traces out of production views.",
+    )
+    mask_traces: bool = Field(
+        default=True, description="Redact personal data from traces before they are exported."
+    )
+    trace_sample_rate: float = Field(default=1.0, ge=0.0, le=1.0)
     langfuse_public_key: SecretStr | None = Field(
         default=None, validation_alias="LANGFUSE_PUBLIC_KEY"
     )
@@ -66,6 +78,17 @@ class Settings(BaseSettings):
         default="https://cloud.langfuse.com",
         validation_alias=AliasChoices("LANGFUSE_BASE_URL", "LANGFUSE_HOST"),
     )
+
+    @field_validator("environment")
+    @classmethod
+    def _valid_environment(cls, value: str) -> str:
+        """Fail at startup rather than have Langfuse silently reject every event."""
+        if not _ENVIRONMENT.match(value) or value.startswith("langfuse"):
+            raise ValueError(
+                "environment must be 1-40 characters of [a-z0-9_-] and cannot start with "
+                f"'langfuse'; got {value!r}"
+            )
+        return value
 
     @property
     def sources_file(self) -> Path:

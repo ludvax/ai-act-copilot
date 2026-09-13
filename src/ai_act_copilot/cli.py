@@ -31,7 +31,13 @@ from ai_act_copilot.ingestion.pipeline import ingest as run_ingest
 from ai_act_copilot.llm.anthropic_client import AnthropicLLM
 from ai_act_copilot.llm.base import LLMError
 from ai_act_copilot.models import ChunkStrategy, Language
-from ai_act_copilot.observability.tracing import TracingStatus, flush_tracing, init_tracing
+from ai_act_copilot.observability.tracing import (
+    TracingStatus,
+    flush_tracing,
+    init_tracing,
+    trace_context,
+    trace_url,
+)
 from ai_act_copilot.retrieval.hybrid import HybridRetriever
 from ai_act_copilot.store.sqlite import CorpusStore
 from ai_act_copilot.store.vectors import VectorStore
@@ -59,6 +65,16 @@ app = typer.Typer(
 # Emoji substitution off: provision ids contain :art:, which Rich would turn into an
 # emoji - and then fail to encode it on a legacy Windows console.
 console = Console(emoji=False)
+
+
+def _print_trace(trace_id: str | None) -> None:
+    """Link the answer to the trace that produced it, when tracing is on.
+
+    A cost and a token count printed in a terminal are a dead end; the link is what turns
+    "that answer was wrong" into a step-by-step account of why.
+    """
+    if trace_id and (url := trace_url(trace_id)):
+        console.print(f"[dim]Trace: {url}[/dim]")
 
 
 def _print_version(value: bool) -> None:
@@ -101,9 +117,12 @@ def ingest(
 ) -> None:
     """Download, parse and chunk the corpus into the local store."""
     settings = get_settings()
-    reports = run_ingest(
-        settings, download=download, force=force, source_ids=source or None, strategy=strategy
-    )
+    with trace_context(
+        name="ingest", tags=["cli", "ingest"], metadata={"download": download, "force": force}
+    ):
+        reports = run_ingest(
+            settings, download=download, force=force, source_ids=source or None, strategy=strategy
+        )
 
     table = Table(title="Ingested corpus")
     for column in ("Document", "Provisions", "Chunks", "Avg tokens", "Fetched"):
@@ -128,7 +147,8 @@ def index(
 ) -> None:
     """Embed the corpus into the vector store, reusing cached vectors."""
     settings = get_settings()
-    report = build_index(settings, strategy=strategy)
+    with trace_context(name="index", tags=["cli", "index"]):
+        report = build_index(settings, strategy=strategy)
     console.print(
         f"[bold]{report.model}[/bold] · {report.strategy} · {report.chunks} chunks · "
         f"{report.embedded} embedded · {report.reused} reused "
@@ -154,7 +174,8 @@ def search(
         retriever = HybridRetriever(
             store, vectors, make_embedder(settings), settings=settings, strategy=strategy
         )
-        hits = retriever.search(query, language=language, limit=k)
+        with trace_context(name="search", tags=["cli", "search"], metadata={"k": k}):
+            hits = retriever.search(query, language=language, limit=k)
 
     if not hits:
         console.print("[yellow]No results. Have you run `aiact ingest` and `aiact index`?[/yellow]")
@@ -187,7 +208,12 @@ def eval_retrieval(
     """Compare retrieval configurations on a golden dataset."""
     settings = get_settings()
     cases = load_cases(dataset)
-    results = compare_configurations(settings, cases, k=k, strategy=strategy)
+    with trace_context(
+        name="eval-retrieval",
+        tags=["cli", "eval"],
+        metadata={"dataset": dataset.name, "k": k, "cases": len(cases)},
+    ):
+        results = compare_configurations(settings, cases, k=k, strategy=strategy)
 
     table = Table(title=f"Retrieval on {dataset.name} ({len(cases)} questions, k={k})")
     table.add_column("Configuration")
@@ -226,9 +252,14 @@ def ask(
             max_tokens=settings.llm_max_tokens,
         )
         try:
-            answer = answer_question(
-                question, retriever=retriever, llm=llm, language=language, limit=k
-            )
+            with trace_context(
+                name="ask",
+                tags=["cli", "ask"],
+                metadata={"k": k, "strategy": str(strategy) if strategy else None},
+            ):
+                answer = answer_question(
+                    question, retriever=retriever, llm=llm, language=language, limit=k
+                )
         except LLMError as error:
             # An API failure is an operational problem, not a stack trace for the user.
             console.print(f"[red]{error}[/red]")
@@ -249,6 +280,7 @@ def ask(
         f" · {answer.usage.cache_read_tokens} cached · ${answer.cost_usd:.4f}"
         f" · prompt {answer.prompt_version}[/dim]"
     )
+    _print_trace(answer.trace_id)
     console.print("[dim]Not legal advice.[/dim]")
 
 
@@ -285,13 +317,14 @@ def agent(
         )
         checkpointer = open_checkpointer(settings.data_dir / "index" / "threads.db")
         try:
-            answer = run_agent(
-                question,
-                deps,
-                thread_id=thread,
-                checkpointer=checkpointer,
-                language=language,
-            )
+            with trace_context(name="agent-run", tags=["cli", "agent"]):
+                answer = run_agent(
+                    question,
+                    deps,
+                    thread_id=thread,
+                    checkpointer=checkpointer,
+                    language=language,
+                )
         except LLMError as error:
             console.print(f"[red]{error}[/red]")
             raise typer.Exit(code=1) from None
@@ -311,6 +344,7 @@ def agent(
         f"[dim]{answer.usage.input_tokens} in / {answer.usage.output_tokens} out"
         f" · ${answer.cost_usd:.4f} · thread {answer.thread_id}[/dim]"
     )
+    _print_trace(answer.trace_id)
     console.print("[dim]Not legal advice.[/dim]")
 
 
@@ -441,4 +475,5 @@ def info(ctx: typer.Context) -> None:
     table.add_row("Anthropic API key", "set" if settings.anthropic_api_key else "missing")
     table.add_row("Data directory", str(settings.data_dir))
     table.add_row("Tracing", tracing.describe())
+    table.add_row("Environment", tracing.environment)
     console.print(table)

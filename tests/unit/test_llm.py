@@ -1,4 +1,3 @@
-from types import SimpleNamespace
 from typing import Any, cast
 
 import anthropic
@@ -8,57 +7,12 @@ from pydantic import BaseModel
 from ai_act_copilot.llm.anthropic_client import AnthropicLLM
 from ai_act_copilot.llm.base import LLMError
 from ai_act_copilot.llm.pricing import Usage, cost_usd
+from tests.doubles import FakeAnthropic
+from tests.doubles import anthropic_response as _response
 
 
 class Schema(BaseModel):
     answer: str
-
-
-def _usage(**kwargs: int) -> SimpleNamespace:
-    defaults = {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation_input_tokens": 0,
-    }
-    return SimpleNamespace(**{**defaults, **kwargs})
-
-
-def _response(**kwargs: Any) -> SimpleNamespace:
-    defaults: dict[str, Any] = {
-        "model": "claude-opus-5",
-        "stop_reason": "end_turn",
-        "content": [SimpleNamespace(type="text", text="Prohibited practices are in Article 5.")],
-        "usage": _usage(input_tokens=1000, output_tokens=200, cache_read_input_tokens=500),
-        "parsed_output": None,
-    }
-    return SimpleNamespace(**{**defaults, **kwargs})
-
-
-class FakeAnthropic:
-    """Records requests and returns a scripted response, on whichever surface is used."""
-
-    def __init__(self, response: SimpleNamespace | None = None, error: Exception | None = None):
-        self.response = response or _response()
-        self.error = error
-        self.calls: list[tuple[str, dict[str, Any]]] = []
-        self.messages = SimpleNamespace(create=self._create, parse=self._parse)
-        self.beta = SimpleNamespace(messages=SimpleNamespace(create=self._beta_create))
-
-    def _record(self, surface: str, kwargs: dict[str, Any]) -> SimpleNamespace:
-        self.calls.append((surface, kwargs))
-        if self.error is not None:
-            raise self.error
-        return self.response
-
-    def _create(self, **kwargs: Any) -> SimpleNamespace:
-        return self._record("create", kwargs)
-
-    def _beta_create(self, **kwargs: Any) -> SimpleNamespace:
-        return self._record("beta.create", kwargs)
-
-    def _parse(self, **kwargs: Any) -> SimpleNamespace:
-        return self._record("parse", kwargs)
 
 
 def _llm(fake: FakeAnthropic, **kwargs: Any) -> AnthropicLLM:

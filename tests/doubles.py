@@ -3,13 +3,14 @@
 import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
 from pydantic import BaseModel
 
 from ai_act_copilot.embeddings.base import Vector, normalise
-from ai_act_copilot.llm.base import LLMResult, Message
+from ai_act_copilot.llm.base import DEFAULT_GENERATION_NAME, LLMResult, Message
 from ai_act_copilot.llm.pricing import Usage
 
 
@@ -66,8 +67,11 @@ class FakeLLM:
         max_tokens: int | None = None,
         tools: Sequence[dict[str, Any]] | None = None,
         output_format: type[BaseModel] | None = None,
+        name: str = DEFAULT_GENERATION_NAME,
     ) -> LLMResult:
-        self.calls.append({"system": system, "messages": list(messages), "tools": tools})
+        self.calls.append(
+            {"system": system, "messages": list(messages), "tools": tools, "name": name}
+        )
         parsed = output_format(**self.payload) if output_format is not None else None
         usage = Usage(input_tokens=1200, output_tokens=180, cache_read_tokens=800)
         return LLMResult(
@@ -122,8 +126,11 @@ class ScriptedLLM:
         max_tokens: int | None = None,
         tools: Sequence[dict[str, Any]] | None = None,
         output_format: type[BaseModel] | None = None,
+        name: str = DEFAULT_GENERATION_NAME,
     ) -> LLMResult:
-        self.calls.append({"system": system, "messages": list(messages), "tools": tools})
+        self.calls.append(
+            {"system": system, "messages": list(messages), "tools": tools, "name": name}
+        )
         turn = self.turns.pop(0) if self.turns else says("No further scripted turn.")
         parsed = output_format(**(turn.payload or {})) if output_format is not None else None
         text = " ".join(
@@ -138,3 +145,63 @@ class ScriptedLLM:
             content=turn.content,
             parsed=parsed,
         )
+
+
+def anthropic_usage(**kwargs: int) -> SimpleNamespace:
+    """A usage object shaped like the one the Anthropic SDK returns."""
+    defaults = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+    }
+    return SimpleNamespace(**{**defaults, **kwargs})
+
+
+def anthropic_response(**kwargs: Any) -> SimpleNamespace:
+    defaults: dict[str, Any] = {
+        "model": "claude-opus-5",
+        "stop_reason": "end_turn",
+        "content": [SimpleNamespace(type="text", text="Prohibited practices are in Article 5.")],
+        "usage": anthropic_usage(input_tokens=1000, output_tokens=200, cache_read_input_tokens=500),
+        "parsed_output": None,
+    }
+    return SimpleNamespace(**{**defaults, **kwargs})
+
+
+class FakeAnthropic:
+    """Records requests and returns a scripted response, on whichever surface is used.
+
+    Kept here rather than in one test module because the tracing tests need the real
+    ``AnthropicLLM`` - the instrumentation lives in it, so a fake LLM would test nothing.
+    """
+
+    def __init__(
+        self,
+        response: SimpleNamespace | None = None,
+        error: Exception | None = None,
+        responses: Sequence[SimpleNamespace] | None = None,
+    ):
+        self.response = response or anthropic_response()
+        self.responses = list(responses or ())
+        self.error = error
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.messages = SimpleNamespace(create=self._create, parse=self._parse)
+        self.beta = SimpleNamespace(messages=SimpleNamespace(create=self._beta_create))
+
+    def _record(self, surface: str, kwargs: dict[str, Any]) -> SimpleNamespace:
+        self.calls.append((surface, kwargs))
+        if self.error is not None:
+            raise self.error
+        if self.responses:
+            return self.responses.pop(0)
+        return self.response
+
+    def _create(self, **kwargs: Any) -> SimpleNamespace:
+        return self._record("create", kwargs)
+
+    def _beta_create(self, **kwargs: Any) -> SimpleNamespace:
+        return self._record("beta.create", kwargs)
+
+    def _parse(self, **kwargs: Any) -> SimpleNamespace:
+        return self._record("parse", kwargs)

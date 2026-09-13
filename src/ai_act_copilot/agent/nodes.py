@@ -23,7 +23,12 @@ from ai_act_copilot.generation.citations import check_citations
 from ai_act_copilot.generation.prompts import DEFAULT_PROMPTS_DIR, load_prompt
 from ai_act_copilot.llm.base import LLMClient
 from ai_act_copilot.models import Language
-from ai_act_copilot.observability.tracing import observe
+from ai_act_copilot.observability.tracing import (
+    in_current_trace,
+    observe,
+    observed,
+    record_span,
+)
 from ai_act_copilot.retrieval.base import Retriever
 from ai_act_copilot.store.sqlite import CorpusStore
 from ai_act_copilot.store.text_analysis import detect_language
@@ -68,7 +73,7 @@ class AgentDeps:
         return next((tool for tool in self.tools if tool.name == name), None)
 
 
-@observe(name="route", capture_input=False, capture_output=False)
+@observe(name="route-question", capture_input=False, capture_output=False)
 def route_node(state: AgentState, deps: AgentDeps) -> dict[str, Any]:
     """Send cheap questions down the cheap path, and refuse off-topic ones early."""
     question = state["question"]
@@ -80,11 +85,17 @@ def route_node(state: AgentState, deps: AgentDeps) -> dict[str, Any]:
         messages=[{"role": "user", "content": question}],
         max_tokens=256,
         output_format=RouteDecision,
+        name="route-question",
     )
     decision = result.parsed if isinstance(result.parsed, RouteDecision) else None
     route = decision.route if decision else Route.COMPLEX
     logger.info("routed as %s", route)
 
+    record_span(
+        input=question,
+        output={"route": route.value, "reason": decision.reason if decision else ""},
+        metadata={"language": language.value, "prompt_version": prompt.version},
+    )
     return {
         "language": language,
         "route": route,
@@ -92,9 +103,13 @@ def route_node(state: AgentState, deps: AgentDeps) -> dict[str, Any]:
     }
 
 
-@observe(name="rag-answer", capture_input=False, capture_output=False)
 def rag_node(state: AgentState, deps: AgentDeps) -> dict[str, Any]:
-    """One retrieval, one grounded answer - the M3 path, reused unchanged."""
+    """One retrieval, one grounded answer - the M3 path, reused unchanged.
+
+    Deliberately not observed: it delegates to ``answer_question``, which is already a
+    span with the same input and output. A wrapper around a single child adds a level
+    to the tree and nothing to read in it.
+    """
     answer = answer_question(
         state["question"],
         retriever=deps.retriever,
@@ -111,12 +126,18 @@ def rag_node(state: AgentState, deps: AgentDeps) -> dict[str, Any]:
     }
 
 
-@observe(name="agent", capture_input=False, capture_output=False)
+@observe(name="agent-step", capture_input=False, capture_output=False)
 def agent_node(state: AgentState, deps: AgentDeps) -> dict[str, Any]:
     """One turn of the tool loop."""
+    step = state.get("steps", 0)
     verdict = check_budget(state, deps.budget)
     if verdict.halted:
         logger.warning("guardrail: %s", verdict.reason)
+        # A run that stopped early is the one worth finding later, so say so on the span.
+        record_span(
+            output={"halted_by": verdict.reason},
+            metadata={"step": step, "guardrail": "halted"},
+        )
         return {"halted_by": verdict.reason, "stop_reason": "halted"}
 
     prompt = load_prompt(AGENT_PROMPT, deps.prompts_dir)
@@ -124,6 +145,7 @@ def agent_node(state: AgentState, deps: AgentDeps) -> dict[str, Any]:
         system=prompt.text,
         messages=state.get("messages", []),
         tools=[tool.definition() for tool in deps.tools],
+        name="agent-turn",
     )
     spent = _spend(state, result.usage.input_tokens, result.usage.output_tokens, result.cost_usd)
     if result.refused:
@@ -134,16 +156,38 @@ def agent_node(state: AgentState, deps: AgentDeps) -> dict[str, Any]:
             **spent,
         }
 
+    blocks = _as_dicts(result.content)
+    record_span(
+        output={
+            "stop_reason": result.stop_reason,
+            "tool_calls": [
+                block.get("name") for block in blocks if block.get("type") == "tool_use"
+            ],
+        },
+        metadata={"step": step + 1, "cost_so_far_usd": round(spent["cost_usd"], 6)},
+    )
     return {
         # Content is replayed verbatim: thinking blocks and tool calls must survive intact.
-        "messages": [{"role": "assistant", "content": _as_dicts(result.content)}],
-        "steps": state.get("steps", 0) + 1,
+        "messages": [{"role": "assistant", "content": blocks}],
+        "steps": step + 1,
         "stop_reason": result.stop_reason,
         **spent,
     }
 
 
-@observe(name="tools", capture_input=False, capture_output=False)
+def _observed_tool(tool: Tool, arguments: dict[str, Any], context: ToolContext) -> tuple[str, bool]:
+    """Run one tool inside its own observation.
+
+    Named after the tool the model chose, so a trace shows which action was taken rather
+    than that "a tool" ran - and so any retrieval it performs nests underneath it.
+    """
+    with observed(name=tool.name, as_type="tool", input=arguments) as span:
+        text, failed = run_tool(tool, arguments, context)
+        span.update(output=text, metadata={"failed": failed, "characters": len(text)})
+        return text, failed
+
+
+@observe(name="run-tools", capture_input=False, capture_output=False)
 def tools_node(state: AgentState, deps: AgentDeps) -> dict[str, Any]:
     """Run every tool the model asked for, returning all results in one message.
 
@@ -181,8 +225,18 @@ def tools_node(state: AgentState, deps: AgentDeps) -> dict[str, Any]:
                     )
                 )
                 continue
+            # Wrapped on this thread: the snapshot has to be taken where the parent
+            # observation is active, not inside the worker that will run the tool.
             pending.append(
-                (call, pool.submit(run_tool, tool, dict(call.get("input", {})), context))
+                (
+                    call,
+                    pool.submit(
+                        in_current_trace(_observed_tool),
+                        tool,
+                        dict(call.get("input", {})),
+                        context,
+                    ),
+                )
             )
 
         for call, future in pending:
@@ -193,6 +247,18 @@ def tools_node(state: AgentState, deps: AgentDeps) -> dict[str, Any]:
                 text, failed = f"{call.get('name')} timed out after {seconds:.0f}s", True
             results.append(_tool_result(call, text, is_error=failed))
 
+    record_span(
+        input=[{"tool": call.get("name"), "input": call.get("input")} for call in calls],
+        output=[
+            {"tool": call.get("name"), "is_error": result["is_error"]}
+            for call, result in zip(calls, results, strict=False)
+        ],
+        metadata={
+            "calls": len(calls),
+            "errors": sum(1 for result in results if result["is_error"]),
+            "provisions_seen": list(dict.fromkeys(context.provisions)),
+        },
+    )
     update: dict[str, Any] = {
         "messages": [{"role": "user", "content": results}],
         "provisions": list(dict.fromkeys(context.provisions)),
@@ -207,11 +273,19 @@ def tools_node(state: AgentState, deps: AgentDeps) -> dict[str, Any]:
     return update
 
 
-@observe(name="verify-citations", capture_input=False, capture_output=False)
+# An evaluator: it judges whether the model's output is supported by what the run read,
+# and that verdict is what decides between finalising and asking for a correction.
+@observe(name="verify-citations", as_type="evaluator", capture_input=False, capture_output=False)
 def verify_node(state: AgentState, deps: AgentDeps) -> dict[str, Any]:
     """Reject citations the run never retrieved, giving the agent one chance to fix them."""
     allowed = set(state.get("provisions", []))
-    check = check_citations(state.get("citations", []), allowed)
+    cited = list(state.get("citations", []))
+    check = check_citations(cited, allowed)
+    record_span(
+        input={"citations": cited, "retrieved": sorted(allowed)},
+        output={"valid": list(check.valid), "unsupported": list(check.invalid)},
+        metadata={"corrections_so_far": state.get("corrections", 0)},
+    )
     if not check.invalid:
         return {"citations": list(check.valid), "needs_correction": False}
 
@@ -241,8 +315,14 @@ def verify_node(state: AgentState, deps: AgentDeps) -> dict[str, Any]:
 @observe(name="abstain", capture_input=False, capture_output=False)
 def abstain_node(state: AgentState, deps: AgentDeps) -> dict[str, Any]:
     """Out-of-scope questions cost nothing to refuse."""
+    refusal = _NOT_COVERED[state.get("language", Language.EN)]
+    record_span(
+        input=state["question"],
+        output=refusal,
+        metadata={"reason": "out of scope for the corpus"},
+    )
     return {
-        "answer": _NOT_COVERED[state.get("language", Language.EN)],
+        "answer": refusal,
         "abstained": True,
         "citations": [],
     }

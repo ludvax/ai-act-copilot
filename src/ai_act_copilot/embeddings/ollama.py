@@ -12,7 +12,7 @@ from collections.abc import Sequence
 import httpx
 
 from ai_act_copilot.embeddings.base import Vector, normalise
-from ai_act_copilot.observability.tracing import observe
+from ai_act_copilot.observability.tracing import observe, record_generation
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +44,21 @@ class OllamaEmbedder:
         self.max_attempts = max_attempts
         self._client = client
 
-    @observe(name="embed", capture_input=False, capture_output=False)
+    @observe(name="embed-texts", as_type="embedding", capture_input=False, capture_output=False)
     def embed(self, texts: Sequence[str]) -> list[Vector]:
         vectors: list[Vector] = []
         for start in range(0, len(texts), self.batch_size):
             batch = list(texts[start : start + self.batch_size])
             vectors.extend(normalise(vector) for vector in self._embed_batch(batch))
+        # The vectors themselves would be thousands of floats of noise in the UI; their
+        # shape is what tells you whether this step did what it was asked.
+        record_generation(
+            model=self.model,
+            input=list(texts) if len(texts) == 1 else f"{len(texts)} texts",
+            output={"vectors": len(vectors), "dimensions": len(vectors[0]) if vectors else 0},
+            model_parameters={"batch_size": self.batch_size},
+            metadata={"backend": "ollama", "base_url": self.base_url},
+        )
         return vectors
 
     def _embed_batch(self, batch: list[str]) -> list[list[float]]:

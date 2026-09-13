@@ -61,3 +61,5 @@ class AgentAnswer:
     provisions_seen: tuple[str, ...] = ()
     halted_by: str | None = None
     thread_id: str | None = None
+    # The trace this run produced, so a caller can link to it or score it afterwards.
+    trace_id: str | None = None

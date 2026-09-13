@@ -14,6 +14,7 @@ accounting and tracing stay identical to the non-agent path.
 import logging
 import sqlite3
 import uuid
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -35,7 +36,12 @@ from ai_act_copilot.agent.nodes import (
 from ai_act_copilot.agent.state import AgentAnswer, AgentState, Route
 from ai_act_copilot.llm.pricing import Usage
 from ai_act_copilot.models import Language
-from ai_act_copilot.observability.tracing import observe
+from ai_act_copilot.observability.tracing import (
+    current_trace_id,
+    observe,
+    record_span,
+    trace_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +105,7 @@ def open_checkpointer(path: Path) -> SqliteSaver:
     return SqliteSaver(connection)
 
 
-@observe(name="agent-run", capture_input=False, capture_output=False)
+@observe(name="agent-run", as_type="agent", capture_input=False, capture_output=False)
 def run_agent(
     question: str,
     deps: AgentDeps,
@@ -120,8 +126,32 @@ def run_agent(
     if language is not None:
         initial["language"] = language
 
-    final: dict[str, Any] = compiled.invoke(initial, config={"configurable": {"thread_id": thread}})
-    return _to_answer(question, thread, final)
+    # One turn is one trace; the thread ties the turns of a conversation into a session,
+    # which is the only way a follow-up reads as a follow-up rather than a lone question.
+    with trace_context(name="agent-run", session_id=thread):
+        final: dict[str, Any] = compiled.invoke(
+            initial, config={"configurable": {"thread_id": thread}}
+        )
+
+    answer = _to_answer(question, thread, final)
+    record_span(
+        input=question,
+        output={
+            "answer": answer.text,
+            "citations": list(answer.citations),
+            "abstained": answer.abstained,
+        },
+        metadata={
+            "route": str(answer.route),
+            "steps": answer.steps,
+            "language": answer.language.value,
+            "provisions_seen": list(answer.provisions_seen),
+            "halted_by": answer.halted_by,
+            "cost_usd": round(answer.cost_usd, 6),
+            "resumed": thread_id is not None,
+        },
+    )
+    return replace(answer, trace_id=current_trace_id())
 
 
 def _to_answer(question: str, thread_id: str, final: dict[str, Any]) -> AgentAnswer:

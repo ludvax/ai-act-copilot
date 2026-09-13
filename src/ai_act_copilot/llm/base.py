@@ -16,6 +16,11 @@ from ai_act_copilot.llm.pricing import Usage
 # A message as the Messages API expects it.
 type Message = dict[str, Any]
 
+# Callers name their generation after what it is for ("generate-answer", "route-question").
+# Observation names are targeted by judges, dashboards and saved filters, so they describe
+# the job rather than the model: swapping models must not break them.
+DEFAULT_GENERATION_NAME = "llm-completion"
+
 
 @dataclass(frozen=True, slots=True)
 class LLMResult:
@@ -56,4 +61,5 @@ class LLMClient(Protocol):
         max_tokens: int | None = None,
         tools: Sequence[dict[str, Any]] | None = None,
         output_format: type[BaseModel] | None = None,
+        name: str = DEFAULT_GENERATION_NAME,
     ) -> LLMResult: ...

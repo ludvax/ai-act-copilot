@@ -21,7 +21,7 @@ from typing import Any
 import anthropic
 from pydantic import BaseModel
 
-from ai_act_copilot.llm.base import LLMError, LLMResult, Message
+from ai_act_copilot.llm.base import DEFAULT_GENERATION_NAME, LLMError, LLMResult, Message
 from ai_act_copilot.llm.pricing import Usage, cost_usd
 from ai_act_copilot.observability.tracing import observe, record_generation
 
@@ -52,7 +52,14 @@ class AnthropicLLM:
         self.enable_fallbacks = enable_fallbacks
         self._client = client or anthropic.Anthropic(api_key=api_key, timeout=timeout)
 
-    @observe(name="claude", as_type="generation", capture_input=False, capture_output=False)
+    # Named generically here and renamed per call site below: the decorator runs once, the
+    # name has to say what this particular call was for.
+    @observe(
+        name=DEFAULT_GENERATION_NAME,
+        as_type="generation",
+        capture_input=False,
+        capture_output=False,
+    )
     def complete(
         self,
         *,
@@ -61,11 +68,13 @@ class AnthropicLLM:
         max_tokens: int | None = None,
         tools: Sequence[dict[str, Any]] | None = None,
         output_format: type[BaseModel] | None = None,
+        name: str = DEFAULT_GENERATION_NAME,
     ) -> LLMResult:
         """One completion. Raises :class:`LLMError` for API failures."""
+        budget = max_tokens or self.max_tokens
         request: dict[str, Any] = {
             "model": self.model,
-            "max_tokens": max_tokens or self.max_tokens,
+            "max_tokens": budget,
             "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
             "messages": list(messages),
             "output_config": {"effort": self.effort},
@@ -73,6 +82,20 @@ class AnthropicLLM:
         if tools:
             request["tools"] = list(tools)
 
+        # Described before the call, not after. A request that fails never reaches the
+        # second update, and a failed call is the one you most want to find and read: it
+        # has to carry its name and the conversation that produced it, not the placeholder.
+        record_generation(
+            name=name,
+            model=self.model,
+            input=[{"role": "system", "content": system}, *messages],
+            model_parameters={"effort": self.effort, "max_tokens": budget},
+            metadata={
+                "structured_output": output_format.__name__ if output_format else None,
+                "tools_offered": [str(tool.get("name", "")) for tool in tools or ()],
+                "fallbacks": self.enable_fallbacks and output_format is None,
+            },
+        )
         try:
             response = self._send(request, output_format)
         except anthropic.APIStatusError as error:
@@ -84,7 +107,10 @@ class AnthropicLLM:
 
         result = _to_result(response, self.model)
         record_generation(
+            name=name,
+            # The model that actually served the call: a server-side fallback changes it.
             model=result.model,
+            output=_generation_output(result),
             usage_details={
                 "input": result.usage.input_tokens,
                 "output": result.usage.output_tokens,
@@ -92,7 +118,7 @@ class AnthropicLLM:
                 "cache_creation_input_tokens": result.usage.cache_write_tokens,
             },
             cost_usd=result.cost_usd,
-            metadata={"effort": self.effort, "stop_reason": result.stop_reason},
+            metadata={"stop_reason": result.stop_reason},
         )
         if result.refused:
             logger.warning("Claude declined the request (stop_reason=refusal)")
@@ -108,6 +134,22 @@ class AnthropicLLM:
                 betas=[FALLBACK_BETA], fallbacks="default", **request
             )
         return self._client.messages.create(**request)
+
+
+def _generation_output(result: LLMResult) -> Any:
+    """What the model produced, in the most readable form available.
+
+    A tool-calling turn is worth showing as its content blocks - which tool, which
+    arguments - because that decision is usually what a trace is being read for.
+    """
+    if result.parsed is not None:
+        return result.parsed.model_dump()
+    if any(getattr(block, "type", None) == "tool_use" for block in result.content):
+        return [
+            block.model_dump(exclude_none=True) if hasattr(block, "model_dump") else block
+            for block in result.content
+        ]
+    return result.text
 
 
 def _to_result(response: Any, requested_model: str) -> LLMResult:

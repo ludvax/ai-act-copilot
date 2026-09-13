@@ -23,7 +23,7 @@ from ai_act_copilot.generation.answer import answer_question
 from ai_act_copilot.llm.anthropic_client import AnthropicLLM
 from ai_act_copilot.llm.base import LLMError
 from ai_act_copilot.models import Language
-from ai_act_copilot.observability.tracing import init_tracing
+from ai_act_copilot.observability.tracing import flush_tracing, init_tracing, trace_context
 from ai_act_copilot.retrieval.hybrid import HybridRetriever
 from ai_act_copilot.store.sqlite import CorpusStore
 from ai_act_copilot.store.vectors import VectorStore
@@ -51,6 +51,8 @@ class AskResponse(BaseModel):
     cost_usd: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0
+    # Handed back so a caller reporting a bad answer can point at the exact run.
+    trace_id: str | None = None
 
 
 class AgentResponse(AskResponse):
@@ -111,6 +113,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
+            # Spans are batched: without this, whatever the last requests produced is lost
+            # when the process exits.
+            flush_tracing()
             store.close()
             vectors.close()
 
@@ -129,13 +134,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def ask(request: AskRequest) -> AskResponse:
         resources: Resources = app.state.resources
         try:
-            answer = answer_question(
-                request.question,
-                retriever=resources.retriever,
-                llm=resources.llm,
-                language=request.language,
-                limit=request.k,
-            )
+            with trace_context(name="ask", tags=["api", "ask"], metadata={"route": "/v1/ask"}):
+                answer = answer_question(
+                    request.question,
+                    retriever=resources.retriever,
+                    llm=resources.llm,
+                    language=request.language,
+                    limit=request.k,
+                )
         except LLMError as error:
             raise HTTPException(status_code=502, detail=str(error)) from error
         return AskResponse(
@@ -146,19 +152,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             cost_usd=answer.cost_usd,
             input_tokens=answer.usage.input_tokens,
             output_tokens=answer.usage.output_tokens,
+            trace_id=answer.trace_id,
         )
 
     @app.post("/v1/agent", response_model=AgentResponse)
     def agent(request: AgentRequest) -> AgentResponse:
         resources: Resources = app.state.resources
         try:
-            answer = run_agent(
-                request.question,
-                resources.agent_deps(),
-                thread_id=request.thread_id,
-                checkpointer=resources.checkpointer,
-                language=request.language,
-            )
+            with trace_context(
+                name="agent-run", tags=["api", "agent"], metadata={"route": "/v1/agent"}
+            ):
+                answer = run_agent(
+                    request.question,
+                    resources.agent_deps(),
+                    thread_id=request.thread_id,
+                    checkpointer=resources.checkpointer,
+                    language=request.language,
+                )
         except LLMError as error:
             raise HTTPException(status_code=502, detail=str(error)) from error
         return AgentResponse(
@@ -174,6 +184,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             thread_id=answer.thread_id or "",
             provisions_seen=list(answer.provisions_seen),
             halted_by=answer.halted_by,
+            trace_id=answer.trace_id,
         )
 
     return app

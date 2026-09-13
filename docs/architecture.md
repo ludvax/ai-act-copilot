@@ -165,15 +165,54 @@ flowchart LR
   — and checkpointed to SQLite, so a `thread_id` continues a conversation.
 - Nodes call the project's own Claude client, keeping one LLM layer for everything.
 
-## Observability — `observability/tracing.py`
+## Observability — `observability/`
 
-Langfuse, wired from the first milestone rather than added at the end. Every stage is a
-span: retrieval, generation, each graph node, each tool, each judge. Generations carry the
-model, token counts (including cache reads), computed cost and the prompt version.
+Langfuse, wired from the first milestone and then audited against
+[Langfuse's own guidance](https://langfuse.com/docs/observability/best-practices) — which
+is how it was discovered that the traces were shaped correctly and completely empty
+([ADR 0008](adr/0008-tracing-that-can-be-audited.md)). What one question produces now:
 
-Without keys the client is created **disabled**, so `@observe` becomes a silent no-op and
-nothing leaves the machine — which is how tests and CI run. The tracing vendor is referenced
-in exactly one module.
+```
+ask                                          trace: name, tags [cli, ask], environment, release
+└── answer-question              chain       in: the question · out: answer, citations, abstained
+    ├── retrieve-passages        retriever   in: the query · out: each passage, its provisions,
+    │   │                                         which signal found it, its fused score
+    │   └── embed-texts          embedding   model bge-m3
+    └── generate-answer          generation  in: system prompt + the passages the model saw
+                                             out: the structured answer
+                                             model, tokens (cache reads included), cost, effort
+```
+
+An agent run is the same idea one level deeper: `agent-run` (`agent`) over `route-question`,
+`agent-step` with its `agent-turn` generation, `run-tools` with one `tool` observation per
+call **named after the tool the model chose**, the retrieval each tool performed nested
+underneath it, and `verify-citations` as an `evaluator`. Tools execute on a thread pool, so
+the trace context is snapshotted at submission — without that the tree comes apart exactly
+where it is most interesting.
+
+Four rules hold the rest together:
+
+- **Names describe the job, never the model.** `generate-answer`, not `claude`. Names are
+  what judges, dashboards and saved filters target, so they have to survive a model change.
+  The name is set before the request, so a call that fails still arrives named and carrying
+  its prompt.
+- **One trace is one question.** A follow-up on the same `thread_id` is its own trace, tied
+  to the first by a session. An evaluation case is its own trace too, and carries its grades
+  back as Langfuse **scores** — latency and cost are on a trace by construction, quality has
+  to be put there.
+- **Personal data never leaves the machine.** A `mask_otel_spans` hook redacts emails, phone
+  numbers, IBANs, card numbers and French social-security numbers at the export boundary.
+  The patterns are narrow on purpose: legal text is numbered references, and a greedy digit
+  pattern would destroy the citations that make an answer auditable.
+- **No keys, no traffic.** Without Langfuse credentials the client is created disabled,
+  `@observe` becomes a silent no-op, and no call site has to branch on it.
+
+The instrumentation is **tested offline**. The Langfuse SDK is OpenTelemetry underneath, so a
+real client pointed at an in-memory exporter emits exactly what a live project would receive:
+`tests/unit/test_trace_shape.py` asserts the tree, the observation types, the input and
+output, model and cost, the session on a two-turn conversation, and that a question
+containing an email address never reaches the exporter — with no account and no network, on
+every commit.
 
 ## Evaluation — `evaluation/`
 
@@ -232,3 +271,4 @@ Stated plainly, because a portfolio that hides these is less useful than one tha
 | [0005](adr/0005-grounded-generation.md) | Structured answers, verified citations, abstention |
 | [0006](adr/0006-explicit-langgraph-agent.md) | Explicit graph, own LLM client |
 | [0007](adr/0007-evaluation-harness.md) | In-house harness, calibrated judges |
+| [0008](adr/0008-tracing-that-can-be-audited.md) | Traces with real content, typed, redacted, tested |

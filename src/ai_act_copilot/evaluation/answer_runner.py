@@ -10,6 +10,7 @@ run retrieved are reconstructed from the store - an approximation, and labelled 
 
 import logging
 import time
+import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -24,7 +25,13 @@ from ai_act_copilot.generation.citations import build_context
 from ai_act_copilot.generation.prompts import DEFAULT_PROMPTS_DIR
 from ai_act_copilot.llm.base import LLMClient
 from ai_act_copilot.models import Language
-from ai_act_copilot.observability.tracing import observe
+from ai_act_copilot.observability.tracing import (
+    current_trace_id,
+    observe,
+    record_score,
+    record_span,
+    trace_context,
+)
 from ai_act_copilot.retrieval.base import Retriever
 from ai_act_copilot.store.sqlite import CorpusStore
 
@@ -82,7 +89,6 @@ class EvalRun:
     results: list[CaseResult] = field(default_factory=list)
 
 
-@observe(name="eval-answers", capture_input=False, capture_output=False)
 def run_answers(
     cases: Sequence[GoldenCase],
     *,
@@ -95,26 +101,39 @@ def run_answers(
     label: str | None = None,
     prompts_dir: Path = DEFAULT_PROMPTS_DIR,
 ) -> EvalRun:
-    """Answer every case, then grade it."""
-    results = [
-        _run_case(
-            case,
-            mode=mode,
-            llm=llm,
-            retriever=retriever,
-            store=store,
-            judge=judge,
-            agent_deps=agent_deps,
-            prompts_dir=prompts_dir,
-        )
-        for case in cases
-    ]
+    """Answer every case, then grade it.
+
+    One case is one trace, deliberately: a run of forty questions is a batch, not a unit of
+    work, and burying it in a single trace makes every case unreadable and unscoreable. The
+    run is recovered instead from a tag and a run id in metadata - not from a session, which
+    on the agent path already means "this conversation".
+    """
+    run_id = f"{label or mode.value}-{uuid.uuid4().hex[:8]}"
+    with trace_context(
+        name=f"eval-{mode.value}",
+        tags=["eval", mode.value],
+        metadata={"eval_run": run_id, "cases": len(cases)},
+    ):
+        results = [
+            _run_case(
+                case,
+                mode=mode,
+                llm=llm,
+                retriever=retriever,
+                store=store,
+                judge=judge,
+                agent_deps=agent_deps,
+                prompts_dir=prompts_dir,
+            )
+            for case in cases
+        ]
     reviewed = sum(case.reviewed for case in cases) / len(cases) if cases else 0.0
     summary = summarise(label or mode.value, mode, results, reviewed)
     logger.info("%s: %d cases, $%.3f", summary.label, summary.cases, summary.cost_usd)
     return EvalRun(summary=summary, results=results)
 
 
+@observe(name="eval-case", as_type="chain", capture_input=False, capture_output=False)
 def _run_case(
     case: GoldenCase,
     *,
@@ -155,7 +174,7 @@ def _run_case(
         faithfulness, unsupported = verdict.score, tuple(verdict.unsupported)
         correctness = judge.correctness(case.question, text, case.reference_answer).score
 
-    return CaseResult(
+    result = CaseResult(
         case_id=case.id,
         category=case.category,
         language=case.language,
@@ -178,6 +197,49 @@ def _run_case(
         cost_usd=cost,
         latency_seconds=latency,
     )
+    record_span(
+        input=case.question,
+        output={"answer": text, "citations": list(citations), "abstained": abstained},
+        metadata={
+            "case_id": case.id,
+            "category": str(case.category),
+            "language": case.language.value,
+            "reviewed": case.reviewed,
+            "expected_provisions": list(case.expected_provisions),
+            "reference_answer": case.reference_answer,
+        },
+    )
+    _publish_scores(result)
+    return result
+
+
+def _publish_scores(result: CaseResult) -> None:
+    """Attach this case's grades to its own trace.
+
+    Latency and cost are visible on a trace by construction; quality is not. Sending the
+    scores back is what lets one filter production-shaped traces by "answers that were
+    graded unfaithful" instead of reading a Markdown table beside them.
+    """
+    trace_id = current_trace_id()
+    if trace_id is None:
+        return  # tracing is off
+    numeric: dict[str, float | None] = {
+        "faithfulness": result.faithfulness,
+        "correctness": result.correctness,
+        "citation-precision": result.checks.citation_precision,
+        "citation-recall": result.checks.citation_recall,
+    }
+    for name, value in numeric.items():
+        if value is not None:
+            record_score(name=name, value=float(value), trace_id=trace_id)
+
+    boolean: dict[str, bool | None] = {
+        "abstention-correct": result.checks.abstention_correct,
+        "route-correct": result.checks.route_correct,
+    }
+    for name, flag in boolean.items():
+        if flag is not None:
+            record_score(name=name, value=float(flag), trace_id=trace_id, data_type="BOOLEAN")
 
 
 def _context_from_provisions(

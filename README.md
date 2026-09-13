@@ -46,7 +46,7 @@ flowchart LR
 | Retrieval | Hand-written: structure-aware chunking, dense (bge-m3 via Ollama) + citation lookup, weighted rank fusion; BM25 implemented and measured |
 | Generation | Claude through the native `anthropic` SDK, structured output with validated citations |
 | Agent | LangGraph `StateGraph`: router, tool loop, citation verification, SQLite checkpointer |
-| Observability | Langfuse (traces, token usage, cost, latency) — disabled automatically without keys |
+| Observability | Langfuse: typed observations with real input/output, cost, sessions, PII redaction, eval scores — disabled automatically without keys |
 | Evaluation | In-house harness: golden dataset, retrieval metrics, calibrated LLM-as-judge |
 
 ## Quickstart
@@ -177,6 +177,40 @@ the citations, the route, the token usage and the cost of the call.
 The `Dockerfile` ships the code but not the index: build it once with `aiact ingest` and
 `aiact index`, then mount `data/` and point `AIACT_OLLAMA_BASE_URL` at your Ollama instance.
 
+## Observability
+
+A trace has to answer "why did it say that?", not just "how long did it take?". Every
+observation therefore carries what it received and what it produced, and is typed so it can
+be filtered — see [ADR 0008](docs/adr/0008-tracing-that-can-be-audited.md).
+
+```
+ask                                          tags [cli, ask] · environment · release
+└── answer-question              chain       the question -> the answer and its citations
+    ├── retrieve-passages        retriever   each passage, its provisions, which signal found it
+    │   └── embed-texts          embedding   bge-m3
+    └── generate-answer          generation  the prompt the model saw -> the structured answer,
+                                             with tokens, cache reads and cost
+```
+
+- **Names describe the job, not the model.** `generate-answer`, never `claude`: dashboards
+  and judges target observations by name, and a name that encodes the model breaks the day
+  it changes. The name is attached before the call, so failures arrive named and readable.
+- **One trace is one question.** A follow-up on the same `--thread` is its own trace, tied
+  to the first by a Langfuse session.
+- **Evaluation writes back.** Each golden case is its own trace and carries its grades as
+  Langfuse scores, so quality sits next to latency and cost instead of in a separate file.
+- **Personal data is redacted before export.** Questions about EU data-protection rules
+  contain personal data; emails, phone numbers, IBANs, card numbers and French
+  social-security numbers are replaced at the export boundary. Legal citations are left
+  intact, and both directions are tested.
+- **Nothing leaves the machine without keys.** No credentials means a disabled client and a
+  no-op decorator, which is how the tests and CI run.
+
+The instrumentation is tested the same way the rest of the code is: the Langfuse SDK is
+OpenTelemetry underneath, so `tests/unit/test_trace_shape.py` points a real client at an
+in-memory exporter and asserts the tree, the types, the input and output, the cost, the
+session and the redaction — no account, no network, on every commit.
+
 ## Evaluation
 
 Every architectural claim in this repository is supposed to be measured, which only means
@@ -237,6 +271,8 @@ pre-commit install     # runs the same checks on every commit
 - [x] **M4** LangGraph agent & HTTP API — router, tools, guardrails, checkpoints, FastAPI
 - [x] **M5** Evaluation harness — golden set, judges, calibration, reports
 - [x] **M6** Documentation & v0.1.0 release — architecture write-up, ADRs, worked example
+- [x] **Observability audit** — traces audited against Langfuse's guidance: typed
+  observations, real input/output, PII redaction, eval scores, offline trace tests
 
 ## License
 

@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from ai_act_copilot.generation.prompts import DEFAULT_PROMPTS_DIR, load_prompt
 from ai_act_copilot.llm.base import LLMClient
-from ai_act_copilot.observability.tracing import observe
+from ai_act_copilot.observability.tracing import observe, record_span
 
 FAITHFULNESS_PROMPT = "judge_faithfulness_v1"
 CORRECTNESS_PROMPT = "judge_correctness_v1"
@@ -88,7 +88,12 @@ class LLMJudge:
         self.llm = llm
         self.prompts_dir = prompts_dir
 
-    @observe(name="judge-faithfulness", capture_input=False, capture_output=False)
+    @observe(
+        name="judge-faithfulness",
+        as_type="evaluator",
+        capture_input=False,
+        capture_output=False,
+    )
     def faithfulness(self, question: str, answer: str, context: str) -> FaithfulnessVerdict:
         prompt = load_prompt(FAITHFULNESS_PROMPT, self.prompts_dir)
         result = self.llm.complete(
@@ -103,11 +108,25 @@ class LLMJudge:
             ],
             max_tokens=1024,
             output_format=FaithfulnessVerdict,
+            name="judge-faithfulness",
         )
         parsed = result.parsed
-        return parsed if isinstance(parsed, FaithfulnessVerdict) else FaithfulnessVerdict(score=0)
+        verdict = (
+            parsed if isinstance(parsed, FaithfulnessVerdict) else FaithfulnessVerdict(score=0)
+        )
+        record_span(
+            input={"question": question, "answer": answer},
+            output=verdict.model_dump(),
+            metadata={"judge": self.llm.model, "prompt_version": prompt.version},
+        )
+        return verdict
 
-    @observe(name="judge-correctness", capture_input=False, capture_output=False)
+    @observe(
+        name="judge-correctness",
+        as_type="evaluator",
+        capture_input=False,
+        capture_output=False,
+    )
     def correctness(self, question: str, answer: str, reference: str) -> CorrectnessVerdict:
         prompt = load_prompt(CORRECTNESS_PROMPT, self.prompts_dir)
         result = self.llm.complete(
@@ -123,6 +142,13 @@ class LLMJudge:
             ],
             max_tokens=1024,
             output_format=CorrectnessVerdict,
+            name="judge-correctness",
         )
         parsed = result.parsed
-        return parsed if isinstance(parsed, CorrectnessVerdict) else CorrectnessVerdict(score=0)
+        verdict = parsed if isinstance(parsed, CorrectnessVerdict) else CorrectnessVerdict(score=0)
+        record_span(
+            input={"question": question, "answer": answer, "reference": reference},
+            output=verdict.model_dump(),
+            metadata={"judge": self.llm.model, "prompt_version": prompt.version},
+        )
+        return verdict

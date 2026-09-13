@@ -6,7 +6,7 @@ result: the passages, the prompt version, the token usage and the cost.
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -21,7 +21,7 @@ from ai_act_copilot.generation.prompts import DEFAULT_PROMPTS_DIR, load_prompt
 from ai_act_copilot.llm.base import LLMClient
 from ai_act_copilot.llm.pricing import Usage
 from ai_act_copilot.models import Language
-from ai_act_copilot.observability.tracing import observe
+from ai_act_copilot.observability.tracing import current_trace_id, observe, record_span
 from ai_act_copilot.retrieval.base import RetrievedChunk, Retriever
 from ai_act_copilot.store.text_analysis import detect_language
 
@@ -62,13 +62,16 @@ class GroundedAnswer:
     model: str
     usage: Usage = field(default_factory=Usage)
     cost_usd: float = 0.0
+    # Lets a caller link this answer to its trace, and an evaluation attach scores to it.
+    trace_id: str | None = None
 
     @property
     def provisions(self) -> tuple[str, ...]:
         return tuple(dict.fromkeys(self.citations))
 
 
-@observe(name="answer", capture_input=False, capture_output=False)
+# A chain: it links a retrieval step to a model call, which is exactly what the type means.
+@observe(name="answer-question", as_type="chain", capture_input=False, capture_output=False)
 def answer_question(
     question: str,
     *,
@@ -84,16 +87,18 @@ def answer_question(
     prompt = load_prompt(ANSWER_PROMPT, prompts_dir or DEFAULT_PROMPTS_DIR)
 
     if not passages:
-        return GroundedAnswer(
-            question=question,
-            text=_NO_CONTEXT[target_language],
-            language=target_language,
-            citations=(),
-            abstained=True,
-            passages=(),
-            citation_check=CitationCheck((), ()),
-            prompt_version=prompt.version,
-            model=llm.model,
+        return _record(
+            GroundedAnswer(
+                question=question,
+                text=_NO_CONTEXT[target_language],
+                language=target_language,
+                citations=(),
+                abstained=True,
+                passages=(),
+                citation_check=CitationCheck((), ()),
+                prompt_version=prompt.version,
+                model=llm.model,
+            )
         )
 
     result = llm.complete(
@@ -105,22 +110,25 @@ def answer_question(
             }
         ],
         output_format=AnswerSchema,
+        name="generate-answer",
     )
 
     if result.refused:
         logger.warning("the model declined to answer")
-        return GroundedAnswer(
-            question=question,
-            text=_NO_CONTEXT[target_language],
-            language=target_language,
-            citations=(),
-            abstained=True,
-            passages=tuple(passages),
-            citation_check=CitationCheck((), ()),
-            prompt_version=prompt.version,
-            model=result.model,
-            usage=result.usage,
-            cost_usd=result.cost_usd,
+        return _record(
+            GroundedAnswer(
+                question=question,
+                text=_NO_CONTEXT[target_language],
+                language=target_language,
+                citations=(),
+                abstained=True,
+                passages=tuple(passages),
+                citation_check=CitationCheck((), ()),
+                prompt_version=prompt.version,
+                model=result.model,
+                usage=result.usage,
+                cost_usd=result.cost_usd,
+            )
         )
 
     parsed = result.parsed if isinstance(result.parsed, AnswerSchema) else None
@@ -129,16 +137,44 @@ def answer_question(
     if check.invalid:
         logger.warning("dropped citations not present in the context: %s", check.invalid)
 
-    return GroundedAnswer(
-        question=question,
-        text=text,
-        language=target_language,
-        citations=check.valid,
-        abstained=bool(parsed and parsed.abstained) or not text.strip(),
-        passages=tuple(passages),
-        citation_check=check,
-        prompt_version=prompt.version,
-        model=result.model,
-        usage=result.usage,
-        cost_usd=result.cost_usd,
+    return _record(
+        GroundedAnswer(
+            question=question,
+            text=text,
+            language=target_language,
+            citations=check.valid,
+            abstained=bool(parsed and parsed.abstained) or not text.strip(),
+            passages=tuple(passages),
+            citation_check=check,
+            prompt_version=prompt.version,
+            model=result.model,
+            usage=result.usage,
+            cost_usd=result.cost_usd,
+        )
     )
+
+
+def _record(answer: GroundedAnswer) -> GroundedAnswer:
+    """Describe the step on its span, whichever way it ended.
+
+    Every exit goes through here - including the two that never call the model - because a
+    step that abstained silently is precisely the one someone will come looking for.
+    """
+    record_span(
+        input=answer.question,
+        output={
+            "answer": answer.text,
+            "citations": list(answer.citations),
+            "abstained": answer.abstained,
+        },
+        metadata={
+            "language": answer.language.value,
+            "prompt_version": answer.prompt_version,
+            "passages": len(answer.passages),
+            "grounded_on": [
+                provision for hit in answer.passages for provision in hit.provision_ids
+            ],
+            "dropped_citations": list(answer.citation_check.invalid),
+        },
+    )
+    return replace(answer, trace_id=current_trace_id())

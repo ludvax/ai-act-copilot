@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from ai_act_copilot.config import Settings
 from ai_act_copilot.embeddings.base import Embedder, Vector
 from ai_act_copilot.models import Chunk, ChunkStrategy, Language
-from ai_act_copilot.observability.tracing import observe
+from ai_act_copilot.observability.tracing import observe, record_span
 from ai_act_copilot.retrieval.base import (
     DEFAULT_WEIGHTS,
     RetrievedChunk,
@@ -66,7 +66,9 @@ class HybridRetriever:
         self.strategy = strategy or settings.chunk_strategy
         self._indexes: dict[Language, _LanguageIndex] = {}
 
-    @observe(name="retrieve", capture_input=False, capture_output=False)
+    @observe(
+        name="retrieve-passages", as_type="retriever", capture_input=False, capture_output=False
+    )
     def search(
         self,
         query: str,
@@ -81,6 +83,7 @@ class HybridRetriever:
         target_language = language or detect_language(query)
         index = self._index_for(target_language)
         if not index.chunks:
+            record_span(input=query, output=[], metadata={"language": target_language.value})
             return []
 
         limit = limit or self.settings.retrieval_top_k
@@ -129,6 +132,30 @@ class HybridRetriever:
             )
             if len(results) == limit:
                 break
+
+        # Which signal found what is the whole debugging story of a bad answer: a passage
+        # that only BM25 liked reads very differently from one three signals agreed on.
+        record_span(
+            input=query,
+            output=[
+                {
+                    "provision_ids": list(hit.chunk.provision_ids),
+                    "signals": sorted(hit.components),
+                    "score": round(hit.score, 4),
+                    "header": hit.chunk.header,
+                }
+                for hit in results
+            ],
+            metadata={
+                "language": target_language.value,
+                "signals_requested": list(requested),
+                "candidates_per_signal": candidates,
+                "limit": limit,
+                "strategy": self.strategy.value,
+                "embedding_model": self.embedder.model,
+                "sources": list(sources) if sources else None,
+            },
+        )
         return results
 
     def _embed(self, query: str) -> Vector:

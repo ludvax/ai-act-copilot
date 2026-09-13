@@ -2,6 +2,10 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+from langfuse._client.attributes import LangfuseOtelSpanAttributes as Attr
+
+from ai_act_copilot.evaluation import answer_runner
 from ai_act_copilot.evaluation.answer_runner import Mode, run_answers
 from ai_act_copilot.evaluation.dataset import Category, GoldenCase
 from ai_act_copilot.evaluation.judges import LLMJudge
@@ -17,7 +21,7 @@ from ai_act_copilot.models import (
 )
 from ai_act_copilot.retrieval.base import RetrievedChunk
 from ai_act_copilot.store.sqlite import CorpusStore
-from tests.conftest import REPO_ROOT
+from tests.conftest import REPO_ROOT, ExportedTraces
 from tests.doubles import ScriptedLLM, decides
 
 PROMPTS = REPO_ROOT / "prompts"
@@ -211,3 +215,68 @@ def test_write_report_creates_both_files(tmp_path: Path) -> None:
     assert json_path.is_file()
     assert markdown_path.is_file()
     assert '"citation_precision"' in json_path.read_text(encoding="utf-8")
+
+
+def test_each_case_is_its_own_trace_carrying_its_scores(
+    tmp_path: Path, traces: ExportedTraces, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run of forty questions must not collapse into one unreadable trace.
+
+    Scores travel through the ingestion API rather than the span exporter, so they are
+    captured at that seam; the trace ids they carry are real ones from the run.
+    """
+    sent: list[dict[str, object]] = []
+    monkeypatch.setattr(answer_runner, "record_score", lambda **kwargs: sent.append(kwargs))
+    llm = _script()
+
+    run_answers(
+        CASES,
+        mode=Mode.RAG,
+        llm=llm,
+        retriever=StubRetriever(),
+        store=_store(tmp_path),
+        prompts_dir=PROMPTS,
+        judge=LLMJudge(llm, PROMPTS),
+        label="rag-test",
+    )
+
+    by_trace: dict[object, set[object]] = {}
+    for score in sent:
+        by_trace.setdefault(score["trace_id"], set()).add(score["name"])
+    assert len(by_trace) == 2, "each case belongs in its own trace"
+    assert all(
+        names
+        == {
+            "faithfulness",
+            "correctness",
+            "citation-precision",
+            "citation-recall",
+            "abstention-correct",
+        }
+        for names in by_trace.values()
+    )
+    # Two cases, two traces, both tagged so the run can be found again.
+    assert traces.named("eval-case").attributes[Attr.TRACE_TAGS] == ("eval", "rag")  # type: ignore[index]
+    assert traces.trace_metadata("eval-case", "eval_run").startswith("rag-test-")
+
+
+def test_no_scores_are_sent_when_tracing_is_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sent: list[dict[str, object]] = []
+    monkeypatch.setattr(answer_runner, "record_score", lambda **kwargs: sent.append(kwargs))
+
+    run_answers(
+        CASES,
+        mode=Mode.RAG,
+        llm=ScriptedLLM(
+            decides(answer="Article 5 lists them.", citations=["ai_act:art:5"], abstained=False),
+            decides(answer="Not covered.", citations=[], abstained=True),
+        ),
+        retriever=StubRetriever(),
+        store=_store(tmp_path),
+        prompts_dir=PROMPTS,
+        label="rag-test",
+    )
+
+    assert sent == []
